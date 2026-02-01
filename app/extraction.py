@@ -208,6 +208,7 @@ def _build_extracted_profile(
     biometrics: Dict[str, Any],
     ui_map: Dict[str, Any],
     llm1_visual: Dict[str, Any],
+    llm1_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     core_fields = [
         "Name",
@@ -284,13 +285,35 @@ def _build_extracted_profile(
     # LLM1 visual parsing
     photos_resp = llm1_visual.get("photos", []) if isinstance(llm1_visual, dict) else []
     photo_desc_map: Dict[str, str] = {}
+    photo_id_map: List[str] = []
+    if isinstance(llm1_meta, dict):
+        raw_map = llm1_meta.get("photo_id_map") or []
+        if isinstance(raw_map, list):
+            for item in raw_map:
+                if isinstance(item, str) and item:
+                    photo_id_map.append(item)
+    ui_photo_ids = {p.get("id") for p in ui_map.get("photos", []) if p.get("id")}
+
+    def _map_llm1_photo_id(pid: str) -> str:
+        if not pid or not pid.startswith("photo_"):
+            return pid
+        try:
+            idx = int(pid.split("_", 1)[1])
+        except Exception:
+            return pid
+        if 1 <= idx <= len(photo_id_map):
+            mapped = photo_id_map[idx - 1]
+            if mapped in ui_photo_ids:
+                return mapped
+        return pid
     if isinstance(photos_resp, list):
         for item in photos_resp:
             if isinstance(item, dict):
                 pid = item.get("id")
                 desc = item.get("description", "")
                 if pid:
-                    photo_desc_map[pid] = desc
+                    mapped_id = _map_llm1_photo_id(str(pid))
+                    photo_desc_map[mapped_id] = desc
     visual_traits = llm1_visual.get("visual_traits", {}) if isinstance(llm1_visual, dict) else {}
     if not isinstance(visual_traits, dict):
         visual_traits = {}

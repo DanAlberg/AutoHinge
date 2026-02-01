@@ -32,6 +32,33 @@ def _is_media_node(node: Dict[str, Any]) -> bool:
     return _is_media_content_desc(cd)
 
 
+def _infer_media_type(
+    nodes: List[Dict[str, Any]],
+    target_bounds: Tuple[int, int, int, int],
+) -> str:
+    best_ratio = 0.0
+    best_type = "photo"
+    for n in nodes:
+        cd = n.get("content_desc") or ""
+        if not _is_media_content_desc(cd):
+            continue
+        b = n.get("bounds")
+        if not b:
+            continue
+        overlap = _bounds_intersection_area(b, target_bounds)
+        if overlap <= 0:
+            continue
+        ratio = overlap / max(1, _bounds_area(target_bounds))
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_type = _media_type_from_desc(cd)
+        elif ratio == best_ratio and ratio > 0:
+            candidate = _media_type_from_desc(cd)
+            if candidate in {"video", "gif"} and best_type == "photo":
+                best_type = candidate
+    return best_type
+
+
 def _compute_ahash(img: Image.Image, size: int = 8) -> int:
     if img.mode != "L":
         img = img.convert("L")
@@ -142,6 +169,30 @@ def _bounds_center(bounds: Tuple[int, int, int, int]) -> Tuple[int, int]:
 def _bounds_area(bounds: Tuple[int, int, int, int]) -> int:
     x1, y1, x2, y2 = bounds
     return max(0, x2 - x1) * max(0, y2 - y1)
+
+
+def _bounds_intersection_area(
+    a: Tuple[int, int, int, int],
+    b: Tuple[int, int, int, int],
+) -> int:
+    x1 = max(a[0], b[0])
+    y1 = max(a[1], b[1])
+    x2 = min(a[2], b[2])
+    y2 = min(a[3], b[3])
+    if x2 <= x1 or y2 <= y1:
+        return 0
+    return (x2 - x1) * (y2 - y1)
+
+
+def _media_type_from_desc(content_desc: str) -> str:
+    cd = (content_desc or "").lower()
+    if "video" in cd:
+        return "video"
+    if "gif" in cd:
+        return "gif"
+    if "photo" in cd:
+        return "photo"
+    return "photo"
 
 
 def _bounds_contains(
@@ -1308,7 +1359,7 @@ def _ensure_photo_square(
             scroll_area,
             direction,
             prev_nodes,
-            distance_px=140,
+            distance_px=300,
         )
         offset += delta
         if target_abs_center_y is not None:
@@ -2048,6 +2099,7 @@ def _scan_profile_single_pass(
                                         like_bounds[2],
                                         like_bounds[3] + offset,
                                     )
+                                media_type = _infer_media_type(nodes, photo_bounds)
 
                                 try:
                                     crop_path = _capture_crop_from_device(
@@ -2069,6 +2121,7 @@ def _scan_profile_single_pass(
                                 ui_map["photos"].append(
                                     {
                                         "content_desc": "photo",
+                                        "media_type": media_type,
                                         "abs_bounds": abs_bounds,
                                         "abs_center_y": int((abs_bounds[1] + abs_bounds[3]) / 2),
                                         "like_bounds": like_abs,

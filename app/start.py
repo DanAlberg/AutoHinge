@@ -280,7 +280,13 @@ def _run_single_profile(
     timings["scan_s"] = round(time.perf_counter() - t0, 2)
     ui_map = scan_result.get("ui_map", {})
     biometrics = scan_result.get("biometrics", {})
-    photo_paths = scan_result.get("photo_paths", [])
+    ui_photos = ui_map.get("photos", [])
+    llm1_photo_entries = [
+        p for p in ui_photos
+        if (p.get("media_type") or "photo").lower() == "photo" and p.get("crop_path")
+    ]
+    photo_paths = [p.get("crop_path") for p in llm1_photo_entries]
+    llm1_photo_id_map = [p.get("id") for p in llm1_photo_entries if p.get("id")]
     scroll_offset = int(scan_result.get("scroll_offset", 0))
     scroll_area = scan_result.get("scroll_area")
     scan_nodes = scan_result.get("nodes")
@@ -299,6 +305,8 @@ def _run_single_profile(
         photo_paths,
         model=os.getenv("LLM_SMALL_MODEL") or os.getenv("GEMINI_SMALL_MODEL") or None,
     )
+    if isinstance(llm1_meta, dict):
+        llm1_meta["photo_id_map"] = llm1_photo_id_map
     timings["llm1_s"] = round(time.perf_counter() - t0, 2)
     if log_state:
         log_state["llm1_result"] = llm1_result
@@ -308,7 +316,7 @@ def _run_single_profile(
         meta["images_paths"] = llm1_meta.get("images_paths", []) or photo_paths
         log_state["meta"] = meta
         _write_run_log(out_path, log_state)
-    extracted = _build_extracted_profile(biometrics, ui_map, llm1_result)
+    extracted = _build_extracted_profile(biometrics, ui_map, llm1_result, llm1_meta)
     if log_state:
         log_state["extracted_profile"] = extracted
         _write_run_log(out_path, log_state)

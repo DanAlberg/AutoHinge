@@ -50,11 +50,12 @@ def LLM1_VISUAL() -> str:
         "Rules:\n"
         "- Return only the JSON object, nothing else.\n"
         "- Base everything ONLY on the photos (no text or profile info).\n"
-        "- If something is unclear, leave the field empty.\n\n"
+        "- If something is unclear, leave the field empty.\n"
+        "- Be brutally honest in assessments; do not use false positivity or exaggeration. If the subject has unattractive features (e.g., poor proportions, low symmetry, high body fat, disheveled grooming, unflattering angles), rate accordingly as Low or Very unattractive/morbidly obese. Avoid overly optimistic ratings unless features are clearly above average.\n\n"
         "Photo description rules:\n"
         "- Provide a detailed, visual summary of the main subject: clothing, pose, activity, background, "
         "facial features when visible, skin tone, build, grooming, accessories, and overall presentation. "
-        "Unbiased, accurate responses are required. Conventionally unattractive people should be labelled as so, false positivity should be avoided.\n\n"
+        "Unbiased, accurate responses are required. Include negatives like poor proportions, unusual facial structures or high body fat if observable.\n\n"
         "Visual traits allowed values (select exactly one unless it says multiple; for Apparent Age (Years) use an integer):\n\n"
         '"Face Visibility Quality": "Clear face in 3+ photos", "Clear face in 1-2 photos", "Face often partially obscured", "Face mostly not visible"\n'
         '"Photo Authenticity / Editing Level": "No obvious filters", "Some filters or mild editing", "Heavy filters/face smoothing", "Unclear"\n'
@@ -72,7 +73,8 @@ def LLM1_VISUAL() -> str:
         '"Body Language and Expression": "Shy/reserved", "Relaxed/casual", "Approachable/open", "Confident/engaging", "Playful/flirty", "Energetic/vibrant"\n'
         '"Visible Enhancements or Features": "None visible", "Glasses", "Sunglasses", "Makeup (light)", "Makeup (heavy)", "Jewelry", "Painted nails", "Very long nails (2cm+)", "Hair extensions/wig (obvious)", "False eyelashes (obvious)", "Hat/cap/beanie (worn in most photos)"\n'
         '"Apparent Chest Proportions": "Petite/small/narrow", "Average/balanced/proportional", "Defined/toned", "Full/curvy", "Prominent/voluptuous", "Broad/strong"\n'
-        '"Apparent Attractiveness Tier": "Very unattractive/morbidly obese", "Low", "Average", "Above average", "High", "Very attractive", "Extremely attractive", "Supermodel"\n'
+        '"Apparent Attractiveness Tier": "Very unattractive/morbidly obese", "Low", "Average", "Above average", "High", "Very attractive", "Extremely attractive", "Supermodel". Be brutally honest and conservative; default to Average or Low unless multiple strong positive features (high symmetry, good proportions, polished grooming). Assign Low or Very unattractive if unattractive features like poor proportions, low symmetry, high body fat, or disheveled grooming are present.\n'
+        '"Reasoning for attractiveness tier": Short, objective justification based on symmetry, proportions, grooming, build, and presentation. Include any negative features if they influence the tier.\n'
         '"Facial Proportion Balance": "Balanced/proportional", "Slightly unbalanced", "Noticeably unbalanced"\n'
         '"Grooming Effort Level": "Minimal/natural", "Moderate/casual", "High/polished", "Heavy/overdone"\n'
         '"Presentation Red Flags": "None", "Poor lighting", "Blurry/low resolution", "Unflattering angle", "Heavy filters/face smoothing", "Sunglasses in most photos", "Face mostly obscured", "Group photos unclear who is the subject", "Too many distant shots", "Mirror selfie cluttered", "Messy background", "Only one clear solo photo", "Awkward cropping", "Overexposed/washed out", "Inconsistent appearance across photos"\n'
@@ -80,7 +82,6 @@ def LLM1_VISUAL() -> str:
         '"Visible Piercing Level": "None visible", "Minimal", "Moderate", "High"\n'
         '"Short-Term / Hookup Orientation Signals": "None evident", "Low", "Moderate", "High"\n'
     )
-
 
 
 
