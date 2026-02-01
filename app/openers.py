@@ -3,7 +3,7 @@ import time
 from typing import Any, Dict
 
 from llm_client import get_default_model, get_llm_client, resolve_model
-from prompts import LLM3_LONG, LLM3_SHORT, LLM4
+from prompts import LLM3_LONG, LLM3_SHORT, LLM4_LONG, LLM4_SHORT
 from ai_trace import _ai_trace_log, _ai_trace_log_response, _ai_trace_prompt_lines
 from runtime import _log
 
@@ -129,8 +129,7 @@ def run_llm3_short(extracted: Dict[str, Any], model: str | None = None) -> Dict[
         return {}
 
 
-def run_llm4(openers_json: Dict[str, Any], model: str | None = None) -> Dict[str, Any]:
-    prompt = LLM4(openers_json)
+def _run_llm4_prompt(prompt: str, model: str | None = None) -> Dict[str, Any]:
     requested_model = model or get_default_model()
     resolved_model = resolve_model(requested_model)
     trace_lines = [
@@ -183,3 +182,16 @@ def run_llm4(openers_json: Dict[str, Any], model: str | None = None) -> Dict[str
         return {}
 
 
+def run_llm4_long(openers_json: Dict[str, Any], model: str | None = None) -> Dict[str, Any]:
+    prompt = LLM4_LONG(openers_json)
+    return _run_llm4_prompt(prompt, model=model)
+
+
+def run_llm4_short(openers_json: Dict[str, Any], model: str | None = None) -> Dict[str, Any]:
+    prompt = LLM4_SHORT(openers_json)
+    return _run_llm4_prompt(prompt, model=model)
+
+
+def run_llm4(openers_json: Dict[str, Any], model: str | None = None) -> Dict[str, Any]:
+    prompt = LLM4_LONG(openers_json)
+    return _run_llm4_prompt(prompt, model=model)

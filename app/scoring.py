@@ -424,11 +424,11 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
         record("Core Biometrics", "Dating Intentions", dating, dating_deltas[dating_norm])
 
     relationship = core_val("Relationship type")
-    relationship_norm = _norm_value(relationship)
-    if relationship_norm in {
+    relationship_norms = {_norm_value(r) for r in _split_csv(relationship)}
+    if relationship_norms.intersection({
         _norm_value("Non-Monogamy"),
         _norm_value("Figuring out my relationship type"),
-    }:
+    }):
         record("Core Biometrics", "Relationship type", relationship, +10)
 
     drinking = core_val("Drinking")

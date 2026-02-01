@@ -31,6 +31,8 @@ Setup
    GEMINI_SMALL_MODEL=gemini-2.5-flash
    OPENAI_MODEL=gpt-5
    OPENAI_SMALL_MODEL=gpt-5-mini
+   # Optional: copy profiles.db to this folder after each run (if it exists)
+   HINGE_DB_BACKUP_DIR=C:\Users\danie\OneDrive - Aptem Ltd\Hinge
    ```
    Only the key for your provider is required. `LLM_PROVIDER` defaults to gemini if unset.
 

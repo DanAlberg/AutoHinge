@@ -207,10 +207,11 @@ def LLM3_SHORT(extracted: Dict[str, Any]) -> str:
         "}\n"
     )
 
-def LLM4(openers_json: Dict[str, Any]) -> str:
+def LLM4_LONG(openers_json: Dict[str, Any]) -> str:
     openers_str = json.dumps(openers_json or {}, ensure_ascii=False, indent=2)
     return (
         "You are selecting the single best Hinge opener from a provided list.\n"
+        "The user has selected this profile for a long term relationship. Focus on being charming, funny and unique \n"
         "Pick the one that is the best, least cringy, and most importantly most likely to get a reply. Be decisive.\n\n"
         "Openers JSON:\n"
         f"{openers_str}\n\n"
@@ -224,5 +225,23 @@ def LLM4(openers_json: Dict[str, Any]) -> str:
         "}\n"
     )
 
+
+def LLM4_SHORT(openers_json: Dict[str, Any]) -> str:
+    openers_str = json.dumps(openers_json or {}, ensure_ascii=False, indent=2)
+    return (
+        "You are selecting the single best Hinge opener from a provided list.\n"
+        "The user has selected this profile for a short term relationship/hook up. Focus on being flirty, charismatic and unique \n"
+        "Pick the one that is the best, least cringy, and most importantly most likely to get a reply. Be decisive.\n\n"
+        "Openers JSON:\n"
+        f"{openers_str}\n\n"
+        "Output JSON only:\n"
+        "{\n"
+        '  "chosen_index": 0,\n'
+        '  "chosen_text": "",\n'
+        '  "main_target_type": "prompt|photo|poll",\n'
+        '  "main_target_id": "",\n'
+        '  "rationale": ""\n'
+        "}\n"
+    )
 
 

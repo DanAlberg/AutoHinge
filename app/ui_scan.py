@@ -18,6 +18,20 @@ def _normalize_text_basic(text: str) -> str:
     return " ".join(s.split())
 
 
+def _is_media_content_desc(content_desc: str) -> bool:
+    cd = (content_desc or "").lower()
+    return "photo" in cd or "video" in cd or "gif" in cd
+
+
+def _is_media_node(node: Dict[str, Any]) -> bool:
+    if node.get("cls") == "android.widget.Button":
+        return False
+    cd = node.get("content_desc") or ""
+    if not cd:
+        return False
+    return _is_media_content_desc(cd)
+
+
 def _compute_ahash(img: Image.Image, size: int = 8) -> int:
     if img.mode != "L":
         img = img.convert("L")
@@ -605,6 +619,92 @@ def _normalize_label(text: str) -> str:
     return " ".join((text or "").strip().lower().split())
 
 
+def _normalize_biometric_value(text: str) -> str:
+    return _normalize_text_basic(text)
+
+
+_BIOMETRIC_ENUM_OPTIONS = {
+    "Dating Intentions": {
+        _normalize_biometric_value(v)
+        for v in (
+            "Life partner",
+            "Long-term relationship",
+            "Long-term relationship, open to short",
+            "Short-term relationship, open to long",
+            "Short-term relationship",
+            "Figuring out my dating goals",
+        )
+    },
+    "Relationship type": {
+        _normalize_biometric_value(v)
+        for v in (
+            "Monogamy",
+            "Non-monogamy",
+            "Figuring out my relationship type",
+        )
+    },
+}
+
+_BIOMETRIC_ENUM_MULTI = {
+    "Relationship type": True,
+}
+
+
+def _append_biometrics_other(biometrics: Dict[str, Any], extra_text: str) -> bool:
+    if not extra_text:
+        return False
+    existing = (biometrics.get("Biometrics Other Text") or "").strip()
+    parts = [p.strip() for p in existing.split(" | ") if p.strip()] if existing else []
+    new_parts = [p.strip() for p in extra_text.split(" | ") if p.strip()]
+    changed = False
+    for part in new_parts:
+        if part and part not in parts:
+            parts.append(part)
+            changed = True
+    if changed:
+        biometrics["Biometrics Other Text"] = " | ".join(parts)
+    return changed
+
+
+def _merge_biometrics_value(biometrics: Dict[str, Any], key: str, value: Any) -> bool:
+    if value in ("", None):
+        return False
+    if key == "Biometrics Other Text":
+        return _append_biometrics_other(biometrics, str(value))
+    allowed = _BIOMETRIC_ENUM_OPTIONS.get(key)
+    is_multi = _BIOMETRIC_ENUM_MULTI.get(key, False)
+    if is_multi and allowed:
+        incoming = [p.strip() for p in str(value).split(",") if p.strip()]
+        incoming_norm = [_normalize_biometric_value(v) for v in incoming]
+        keep = [v for v, n in zip(incoming, incoming_norm) if n in allowed]
+        if not keep:
+            return False
+        existing_raw = str(biometrics.get(key, "") or "")
+        existing = [p.strip() for p in existing_raw.split(",") if p.strip()]
+        existing_norm = {_normalize_biometric_value(v) for v in existing}
+        merged = list(existing)
+        changed = False
+        for v, n in zip(keep, [_normalize_biometric_value(v) for v in keep]):
+            if n not in existing_norm:
+                merged.append(v)
+                existing_norm.add(n)
+                changed = True
+        if changed or not existing_raw:
+            biometrics[key] = ", ".join(merged)
+            return True
+        return False
+    if key in biometrics:
+        if allowed:
+            current_norm = _normalize_biometric_value(str(biometrics.get(key, "")))
+            incoming_norm = _normalize_biometric_value(str(value))
+            if current_norm not in allowed and incoming_norm in allowed:
+                biometrics[key] = value
+                return True
+        return False
+    biometrics[key] = value
+    return True
+
+
 def _parse_height_value(raw: str) -> Optional[int]:
     if not raw:
         return None
@@ -658,6 +758,7 @@ def _extract_biometrics_from_nodes(
             value_nodes.append(n)
 
     updates: Dict[str, Any] = {}
+    extra_notes: List[str] = []
     for label in label_nodes:
         label_text = _normalize_label(label.get("content_desc", ""))
         if label_text not in _BIOMETRIC_LABEL_MAP:
@@ -665,8 +766,7 @@ def _extract_biometrics_from_nodes(
         field = _BIOMETRIC_LABEL_MAP[label_text]
         lb = label["bounds"]
         _, ly = _bounds_center(lb)
-        best_val = None
-        best_score = None
+        candidates: List[Tuple[int, str]] = []
         for val in value_nodes:
             vb = val["bounds"]
             # Value should be to the right of the label and roughly aligned vertically.
@@ -677,25 +777,52 @@ def _extract_biometrics_from_nodes(
                 continue
             dx = vb[0] - lb[2]
             score = abs(vy - ly) * 2 + dx
-            if best_score is None or score < best_score:
-                best_score = score
-                best_val = val
-        if not best_val:
+            raw_val = (val.get("text") or "").strip()
+            if not raw_val:
+                continue
+            candidates.append((score, raw_val))
+        if not candidates:
             continue
-        raw_val = (best_val.get("text") or "").strip()
-        if not raw_val:
+        allowed = _BIOMETRIC_ENUM_OPTIONS.get(field)
+        pick_raw = None
+        if allowed:
+            allowed_matches = [
+                (score, raw)
+                for score, raw in candidates
+                if _normalize_biometric_value(raw) in allowed
+            ]
+            if allowed_matches:
+                if _BIOMETRIC_ENUM_MULTI.get(field):
+                    allowed_matches.sort(key=lambda x: x[0])
+                    pick_raw = ", ".join([raw for _, raw in allowed_matches])
+                else:
+                    pick_raw = min(allowed_matches, key=lambda x: x[0])[1]
+                for _, raw in candidates:
+                    if _normalize_biometric_value(raw) not in allowed:
+                        extra_notes.append(f"{field}: {raw}")
+            else:
+                pick_raw = min(candidates, key=lambda x: x[0])[1]
+                if len(candidates) > 1:
+                    for _, raw in candidates:
+                        if raw != pick_raw:
+                            extra_notes.append(f"{field}: {raw}")
+        else:
+            pick_raw = min(candidates, key=lambda x: x[0])[1]
+        if not pick_raw:
             continue
         if field == "Age":
             try:
-                updates[field] = int("".join(ch for ch in raw_val if ch.isdigit()))
+                updates[field] = int("".join(ch for ch in pick_raw if ch.isdigit()))
             except Exception:
                 continue
         elif field == "Height":
-            height_val = _parse_height_value(raw_val)
+            height_val = _parse_height_value(pick_raw)
             if height_val is not None:
                 updates[field] = height_val
         else:
-            updates[field] = raw_val
+            updates[field] = pick_raw
+    if extra_notes:
+        updates["Biometrics Other Text"] = " | ".join(extra_notes)
     return updates
 
 
@@ -746,9 +873,11 @@ def _scan_biometrics_hscroll(
         updates = _extract_biometrics_from_nodes(nodes, scroll_area)
         new_any = False
         for k, v in updates.items():
-            if k not in biometrics and v not in ("", None):
-                biometrics[k] = v
-                _log(f"[BIOMETRICS] {k} = {v}")
+            if _merge_biometrics_value(biometrics, k, v):
+                if k == "Biometrics Other Text":
+                    _log(f"[BIOMETRICS] {k} = {biometrics.get(k)}")
+                else:
+                    _log(f"[BIOMETRICS] {k} = {v}")
                 new_any = True
         if new_any:
             no_new = 0
@@ -842,7 +971,7 @@ def _update_ui_map_text_only(
         _, cy = _bounds_center(b)
         if cls == "android.widget.Button" and cd.lower().startswith("like"):
             cd_lower = cd.lower()
-            if "photo" in cd_lower:
+            if "photo" in cd_lower or "video" in cd_lower or "gif" in cd_lower:
                 like_type = "photo"
             elif "prompt" in cd_lower:
                 like_type = "prompt"
@@ -925,10 +1054,7 @@ def _find_primary_photo_bounds(
     best = None
     best_area = None
     for n in nodes:
-        if n.get("cls") != "android.widget.ImageView":
-            continue
-        cd = (n.get("content_desc") or "").lower()
-        if "photo" not in cd:
+        if not _is_media_node(n):
             continue
         b = n.get("bounds")
         if not b:
@@ -953,10 +1079,7 @@ def _find_visible_photo_bounds_all(
     top, bottom = scroll_area[1], scroll_area[3]
     results: List[Tuple[int, int, int, int]] = []
     for n in nodes:
-        if n.get("cls") != "android.widget.ImageView":
-            continue
-        cd = (n.get("content_desc") or "").lower()
-        if "photo" not in cd:
+        if not _is_media_node(n):
             continue
         b = n.get("bounds")
         if not b:
@@ -1801,10 +1924,7 @@ def _find_visible_photo_bounds(
     best = None
     best_dist = None
     for n in nodes:
-        if n.get("cls") != "android.widget.ImageView":
-            continue
-        cd = (n.get("content_desc") or "").lower()
-        if "photo" not in cd:
+        if not _is_media_node(n):
             continue
         b = n.get("bounds")
         if not b:
@@ -1864,9 +1984,11 @@ def _scan_profile_single_pass(
         # Extract biometrics visible on this screen.
         updates = _extract_biometrics_from_nodes(nodes, scroll_area)
         for k, v in updates.items():
-            if k not in biometrics and v not in ("", None):
-                biometrics[k] = v
-                _log(f"[BIOMETRICS] {k} = {v}")
+            if _merge_biometrics_value(biometrics, k, v):
+                if k == "Biometrics Other Text":
+                    _log(f"[BIOMETRICS] {k} = {biometrics.get(k)}")
+                else:
+                    _log(f"[BIOMETRICS] {k} = {v}")
 
         # Horizontal biometrics scroll (once), stop when no new values appear.
         if not did_hscroll and any(k in biometrics for k in ("Age", "Gender", "Sexuality")):

@@ -5,19 +5,21 @@
 import argparse
 import json
 import os
+import shutil
 import time
 from datetime import datetime
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import config  # ensure .env is loaded early
 
 from helper_functions import ensure_adb_running, connect_device, get_screen_resolution, open_hinge
 from extraction import run_llm1_visual, run_profile_eval_llm, _build_extracted_profile
-from openers import run_llm3_long, run_llm3_short, run_llm4
+from openers import run_llm3_long, run_llm3_short, run_llm4_long, run_llm4_short
 from profile_utils import _get_core, _norm_value
 from runtime import _is_run_json_enabled, _log, set_verbose
 from scoring import _classify_preference_flag, _format_score_table, _score_profile_long, _score_profile_short
 from sqlite_store import (
+    get_db_path,
     upsert_profile_flat,
     update_profile_opening_messages_json,
     update_profile_opening_pick,
@@ -90,11 +92,14 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _confirm_action(action_label: str, unrestricted: bool) -> bool:
+def _confirm_action(action_label: str, unrestricted: bool, timings: Optional[Dict[str, Any]] = None) -> bool:
     if unrestricted:
         return True
     try:
+        t0 = time.perf_counter()
         resp = input(f"Confirm {action_label}? (y/N): ").strip().lower()
+        if isinstance(timings, dict):
+            timings["input_wait_s"] = timings.get("input_wait_s", 0.0) + (time.perf_counter() - t0)
         return resp in {"y", "yes"}
     except Exception:
         return False
@@ -133,6 +138,80 @@ def _handle_send_like_anyway(device, width: int, height: int) -> bool:
         return False
 
 
+def _backup_db_if_configured() -> None:
+    backup_dir = (os.getenv("HINGE_DB_BACKUP_DIR") or "").strip()
+    if not backup_dir or not os.path.isdir(backup_dir):
+        return
+    try:
+        src = get_db_path()
+        if not os.path.isfile(src):
+            return
+        dst = os.path.join(backup_dir, "profiles.db")
+        shutil.copy2(src, dst)
+        print(f"[BACKUP] profiles.db -> {dst}")
+    except Exception as e:
+        print(f"[BACKUP] failed: {e}")
+
+
+def _enter_comment_text(
+    device,
+    width: int,
+    height: int,
+    chosen_text: str,
+    attempts: int = 3,
+) -> bool:
+    last_xml = ""
+    for _ in range(attempts):
+        comment_bounds = None
+        for _ in range(3):
+            last_xml = _dump_ui_xml(device)
+            post_nodes = _parse_ui_nodes(last_xml)
+            comment_bounds = _find_add_comment_bounds(post_nodes)
+            if comment_bounds:
+                break
+            time.sleep(0.2)
+        if not comment_bounds:
+            time.sleep(0.2)
+            continue
+        try:
+            _tap_bounds(device, comment_bounds, width, height)
+            time.sleep(0.2)
+            from helper_functions import input_text, hide_keyboard
+            input_text(device, chosen_text.strip())
+            time.sleep(0.2)
+            hide_keyboard(device)
+            time.sleep(0.2)
+        except Exception:
+            time.sleep(0.2)
+            continue
+        last_xml = _dump_ui_xml(device)
+        post_nodes = _parse_ui_nodes(last_xml)
+        if not _find_add_comment_bounds(post_nodes):
+            return True
+        time.sleep(0.2)
+    if last_xml:
+        try:
+            os.makedirs("logs", exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            xml_path = os.path.join("logs", f"send_comment_missing_{ts}.xml")
+            with open(xml_path, "w", encoding="utf-8") as f:
+                f.write(last_xml)
+            _log(f"[SEND] wrote XML snapshot to {xml_path}")
+        except Exception:
+            pass
+    return False
+
+
+def _write_run_log(path: str, data: Dict[str, Any]) -> None:
+    if not path:
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"[LOG] failed to write {path}: {e}")
+
+
 def _run_single_profile(
     device,
     width: int,
@@ -145,8 +224,52 @@ def _run_single_profile(
 ) -> int:
     if total_profiles > 1:
         print(f"[RUN] profile {profile_idx + 1}/{total_profiles}")
+    t_start = time.perf_counter()
+    timings: Dict[str, Any] = {"input_wait_s": 0.0}
+    out_path = ""
+    table_path = ""
+    log_state: Dict[str, Any] = {}
+    try:
+        os.makedirs("logs", exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        suffix = f"_{profile_idx + 1:02d}" if total_profiles > 1 else ""
+        out_path = os.path.join("logs", f"rating_test_{ts}{suffix}.json")
+        table_path = os.path.join("logs", f"rating_test_{ts}{suffix}.txt")
+        log_state = {
+            "meta": {
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "llm_provider": os.getenv("LLM_PROVIDER", ""),
+                "model": os.getenv("LLM_SMALL_MODEL") or os.getenv("GEMINI_SMALL_MODEL") or "",
+                "images_count": None,
+                "images_paths": [],
+                "timings": {},
+                "scoring_ruleset": "long_v0",
+            },
+            "biometrics": {},
+            "ui_map_summary": {},
+            "llm1_result": {},
+            "llm1_meta": {},
+            "extracted_profile": {},
+            "profile_eval": {},
+            "long_score_result": {},
+            "short_score_result": {},
+            "score_table_long": "",
+            "score_table_short": "",
+            "score_table": "",
+            "gate_decision": "",
+            "gate_metrics": {},
+            "manual_override": "",
+            "llm3_variant": "",
+            "llm3_result": {},
+            "llm4_result": {},
+            "target_action": {},
+        }
+        _write_run_log(out_path, log_state)
+    except Exception as e:
+        print(f"[LOG] failed to init run log: {e}")
     _clear_crops_folder()
     _log("[UI] Single-pass scan (slow scroll, capture as you go)...")
+    t0 = time.perf_counter()
     scan_result = _scan_profile_single_pass(
         device,
         width,
@@ -154,29 +277,69 @@ def _run_single_profile(
         max_scrolls=max_scrolls,
         scroll_step_px=scroll_step,
     )
+    timings["scan_s"] = round(time.perf_counter() - t0, 2)
     ui_map = scan_result.get("ui_map", {})
     biometrics = scan_result.get("biometrics", {})
     photo_paths = scan_result.get("photo_paths", [])
     scroll_offset = int(scan_result.get("scroll_offset", 0))
     scroll_area = scan_result.get("scroll_area")
     scan_nodes = scan_result.get("nodes")
+    if log_state:
+        log_state["biometrics"] = biometrics
+        log_state["ui_map_summary"] = {
+            "prompts": len(ui_map.get("prompts", [])),
+            "photos": len(ui_map.get("photos", [])),
+            "poll_options": len(ui_map.get("poll", {}).get("options", [])),
+        }
+        _write_run_log(out_path, log_state)
 
     _log(f"[LLM1] Sending {len(photo_paths)} photos for visual analysis")
+    t0 = time.perf_counter()
     llm1_result, llm1_meta = run_llm1_visual(
         photo_paths,
         model=os.getenv("LLM_SMALL_MODEL") or os.getenv("GEMINI_SMALL_MODEL") or None,
     )
+    timings["llm1_s"] = round(time.perf_counter() - t0, 2)
+    if log_state:
+        log_state["llm1_result"] = llm1_result
+        log_state["llm1_meta"] = llm1_meta
+        meta = log_state.get("meta") or {}
+        meta["images_count"] = llm1_meta.get("images_count")
+        meta["images_paths"] = llm1_meta.get("images_paths", []) or photo_paths
+        log_state["meta"] = meta
+        _write_run_log(out_path, log_state)
     extracted = _build_extracted_profile(biometrics, ui_map, llm1_result)
+    if log_state:
+        log_state["extracted_profile"] = extracted
+        _write_run_log(out_path, log_state)
 
+    t0 = time.perf_counter()
     eval_result = run_profile_eval_llm(
         extracted,
         model=os.getenv("LLM_SMALL_MODEL") or os.getenv("GEMINI_SMALL_MODEL") or None,
     )
+    timings["llm2_s"] = round(time.perf_counter() - t0, 2)
+    if log_state:
+        log_state["profile_eval"] = eval_result
+        _write_run_log(out_path, log_state)
     long_score_result = _score_profile_long(extracted, eval_result)
     short_score_result = _score_profile_short(extracted, eval_result)
     score_table_long = _format_score_table("Long", long_score_result)
     score_table_short = _format_score_table("Short", short_score_result)
     score_table = score_table_long + "\n\n" + score_table_short
+    if log_state:
+        log_state["long_score_result"] = long_score_result
+        log_state["short_score_result"] = short_score_result
+        log_state["score_table_long"] = score_table_long
+        log_state["score_table_short"] = score_table_short
+        log_state["score_table"] = score_table
+        _write_run_log(out_path, log_state)
+    if table_path:
+        try:
+            with open(table_path, "w", encoding="utf-8") as f:
+                f.write(score_table)
+        except Exception as e:
+            print(f"[LOG] failed to write {table_path}: {e}")
     long_score = long_score_result.get("score", 0) if isinstance(long_score_result, dict) else 0
     short_score = short_score_result.get("score", 0) if isinstance(short_score_result, dict) else 0
 
@@ -206,6 +369,19 @@ def _run_single_profile(
         if decision == "short_pickup":
             decision = "reject"
 
+    if log_state:
+        log_state["gate_decision"] = decision
+        log_state["gate_metrics"] = {
+            "long_score": int(long_score),
+            "short_score": int(short_score),
+            "long_delta": int(long_score - T_LONG),
+            "short_delta": int(short_score - T_SHORT),
+            "dom_margin": int(DOM_MARGIN),
+            "t_long": int(T_LONG),
+            "t_short": int(T_SHORT),
+        }
+        _write_run_log(out_path, log_state)
+
     print("\n" + score_table)
 
     manual_override = ""
@@ -220,12 +396,18 @@ def _run_single_profile(
                 short_delta=short_score - T_SHORT,
             )
         )
+        t0 = time.perf_counter()
         override = input("Override decision? (long/short/reject, blank to keep): ").strip().lower()
+        timings["input_wait_s"] = timings.get("input_wait_s", 0.0) + (time.perf_counter() - t0)
         if override in {"long", "short", "reject"}:
             manual_override = override
             decision = {"long": "long_pickup", "short": "short_pickup", "reject": "reject"}[override]
     except Exception:
         pass
+    if log_state:
+        log_state["manual_override"] = manual_override
+        log_state["gate_decision"] = decision
+        _write_run_log(out_path, log_state)
     print(
         "GATE decision={decision} long_score={long_score} short_score={short_score} "
         "long_delta={long_delta} short_delta={short_delta} dom_margin={dom_margin}".format(
@@ -244,12 +426,28 @@ def _run_single_profile(
     target_action = {}
     if decision == "short_pickup":
         llm3_variant = "short"
+        t0 = time.perf_counter()
         llm3_result = run_llm3_short(extracted)
+        timings["llm3_s"] = round(time.perf_counter() - t0, 2)
     elif decision == "long_pickup":
         llm3_variant = "long"
+        t0 = time.perf_counter()
         llm3_result = run_llm3_long(extracted)
+        timings["llm3_s"] = round(time.perf_counter() - t0, 2)
+    if log_state:
+        log_state["llm3_variant"] = llm3_variant
+        log_state["llm3_result"] = llm3_result
+        _write_run_log(out_path, log_state)
     if llm3_result:
-        llm4_result = run_llm4(llm3_result)
+        t0 = time.perf_counter()
+        if llm3_variant == "short":
+            llm4_result = run_llm4_short(llm3_result)
+        else:
+            llm4_result = run_llm4_long(llm3_result)
+        timings["llm4_s"] = round(time.perf_counter() - t0, 2)
+        if log_state:
+            log_state["llm4_result"] = llm4_result
+            _write_run_log(out_path, log_state)
         target_id = str(llm4_result.get("main_target_id", "") or "").strip()
         if target_id:
             print(f"[TARGET] LLM4 chose target_id={target_id}")
@@ -484,7 +682,7 @@ def _run_single_profile(
         post_nodes = _parse_ui_nodes(post_xml)
         dislike_bounds = _find_dislike_bounds(post_nodes)
         if dislike_bounds:
-            if _confirm_action("dislike", args.unrestricted):
+            if _confirm_action("dislike", args.unrestricted, timings):
                 try:
                     tap_x, tap_y = _tap_bounds(device, dislike_bounds, width, height)
                     target_action = {"action": "dislike", "tap_coords": [tap_x, tap_y]}
@@ -495,62 +693,9 @@ def _run_single_profile(
         else:
             print("[DISLIKE] button not found")
 
-    out = {
-        "meta": {
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "llm_provider": os.getenv("LLM_PROVIDER", ""),
-            "model": os.getenv("LLM_SMALL_MODEL") or os.getenv("GEMINI_SMALL_MODEL") or "",
-            "images_count": llm1_meta.get("images_count"),
-            "images_paths": llm1_meta.get("images_paths", []) or photo_paths,
-            "timings": {},
-            "scoring_ruleset": "long_v0",
-        },
-        "gate_decision": decision,
-        "gate_metrics": {
-            "long_score": int(long_score),
-            "short_score": int(short_score),
-            "long_delta": int(long_score - T_LONG),
-            "short_delta": int(short_score - T_SHORT),
-            "dom_margin": int(DOM_MARGIN),
-            "t_long": int(T_LONG),
-            "t_short": int(T_SHORT),
-        },
-        "manual_override": manual_override,
-        "llm3_variant": llm3_variant,
-        "llm3_result": llm3_result,
-        "llm4_result": llm4_result,
-        "target_action": target_action,
-        "extracted_profile": extracted,
-        "ui_map_summary": {
-            "prompts": len(ui_map.get("prompts", [])),
-            "photos": len(ui_map.get("photos", [])),
-            "poll_options": len(ui_map.get("poll", {}).get("options", [])),
-        },
-        "profile_eval": eval_result,
-        "long_score_result": long_score_result,
-        "short_score_result": short_score_result,
-        "score_table_long": score_table_long,
-        "score_table_short": score_table_short,
-        "score_table": score_table,
-    }
-
-    if _is_run_json_enabled():
-        print(json.dumps(out, indent=2, ensure_ascii=False))
-
-    out_path = ""
-    try:
-        os.makedirs("logs", exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_path = os.path.join("logs", f"rating_test_{ts}.json")
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(out, f, indent=2, ensure_ascii=False)
-        table_path = os.path.join("logs", f"rating_test_{ts}.txt")
-        with open(table_path, "w", encoding="utf-8") as f:
-            f.write(score_table)
-        print(f"Wrote results to {out_path}")
-        print(f"Wrote score table to {table_path}")
-    except Exception as e:
-        print(f"Failed to write results: {e}")
+    if log_state:
+        log_state["target_action"] = target_action
+        _write_run_log(out_path, log_state)
 
     # SQL logging
     try:
@@ -574,6 +719,8 @@ def _run_single_profile(
     except Exception as e:
         print(f"[sql] log failed: {e}")
 
+    _backup_db_if_configured()
+
     if decision in {"long_pickup", "short_pickup"}:
         if not isinstance(llm4_result, dict):
             raise RuntimeError("LLM4 missing result; cannot send comment.")
@@ -581,28 +728,10 @@ def _run_single_profile(
         if not isinstance(chosen_text, str) or not chosen_text.strip():
             raise RuntimeError("LLM4 missing chosen_text; cannot send comment.")
 
-        comment_bounds = None
-        for _ in range(3):
-            post_xml = _dump_ui_xml(device)
-            post_nodes = _parse_ui_nodes(post_xml)
-            comment_bounds = _find_add_comment_bounds(post_nodes)
-            if comment_bounds:
-                break
-            time.sleep(0.25)
-        if not comment_bounds:
-            raise RuntimeError("Add a comment field not found.")
+        if not _enter_comment_text(device, width, height, chosen_text, attempts=3):
+            raise RuntimeError("Failed to enter comment text.")
 
-        try:
-            _tap_bounds(device, comment_bounds, width, height)
-            time.sleep(0.4)
-            from helper_functions import input_text, hide_keyboard
-            input_text(device, chosen_text.strip())
-            time.sleep(0.2)
-            hide_keyboard(device)
-            time.sleep(0.6)
-        except Exception as e:
-            raise RuntimeError(f"Failed to enter comment: {e}")
-
+        time.sleep(0.2)
         send_bounds = None
         for attempt in range(6):
             post_xml = _dump_ui_xml(device)
@@ -625,14 +754,8 @@ def _run_single_profile(
                 pass
             # Recovery: re-focus the comment field, then retry.
             try:
-                recovery_nodes = _parse_ui_nodes(_dump_ui_xml(device))
-                recovery_bounds = _find_add_comment_bounds(recovery_nodes)
-                if recovery_bounds:
-                    _tap_bounds(device, recovery_bounds, width, height)
-                    time.sleep(0.3)
-                    from helper_functions import hide_keyboard
-                    hide_keyboard(device)
-                    time.sleep(0.6)
+                if _enter_comment_text(device, width, height, chosen_text, attempts=2):
+                    time.sleep(0.2)
                     for attempt in range(4):
                         post_xml = _dump_ui_xml(device)
                         post_nodes = _parse_ui_nodes(post_xml)
@@ -647,7 +770,7 @@ def _run_single_profile(
         if not send_bounds:
             raise RuntimeError("Send priority like button not found.")
 
-        if _confirm_action("send priority like", args.unrestricted):
+        if _confirm_action("send priority like", args.unrestricted, timings):
             try:
                 tap_x, tap_y = _tap_bounds(device, send_bounds, width, height)
                 target_action["comment_text"] = chosen_text.strip()
@@ -657,6 +780,41 @@ def _run_single_profile(
                 raise RuntimeError(f"Send priority like failed: {e}")
         else:
             print("[SEND] skipped by user")
+
+        if log_state:
+            log_state["target_action"] = target_action
+            _write_run_log(out_path, log_state)
+
+    t_end = time.perf_counter()
+    timings["input_wait_s"] = round(float(timings.get("input_wait_s", 0.0)), 2)
+    timings["total_elapsed_s"] = round(t_end - t_start, 2)
+    timings["effective_elapsed_s"] = round(
+        (t_end - t_start) - float(timings.get("input_wait_s", 0.0)),
+        2,
+    )
+    if log_state:
+        meta = log_state.get("meta") or {}
+        meta["timings"] = timings
+        log_state["meta"] = meta
+        _write_run_log(out_path, log_state)
+
+    parts = [
+        f"total_s={timings.get('total_elapsed_s')}",
+        f"effective_s={timings.get('effective_elapsed_s')}",
+        f"input_wait_s={timings.get('input_wait_s')}",
+    ]
+    for key in ("scan_s", "llm1_s", "llm2_s", "llm3_s", "llm4_s"):
+        if key in timings:
+            parts.append(f"{key}={timings.get(key)}")
+    print("[TIMINGS] " + " ".join(parts))
+
+    if _is_run_json_enabled():
+        print(json.dumps(log_state, indent=2, ensure_ascii=False))
+
+    if out_path:
+        print(f"Wrote results to {out_path}")
+        if table_path:
+            print(f"Wrote score table to {table_path}")
 
     preference_flag = _classify_preference_flag(long_score, short_score)
     print("\n=== Preference Flag ===")

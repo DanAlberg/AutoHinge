@@ -234,6 +234,7 @@ def _build_extracted_profile(
         "Smoking",
         "Marijuana",
         "Drugs",
+        "Biometrics Other Text",
     ]
     core: Dict[str, Any] = {k: "" for k in core_fields}
     core["Age"] = None
