@@ -48,6 +48,7 @@ uv run python start.py
 
 Options
 - `--unrestricted`: skips confirmations before dislike and send priority like
+- `--profiles N`: process N profiles then exit (default: 1)
 
 Outputs
 - `profiles.db` at repo root (created on first successful insert)

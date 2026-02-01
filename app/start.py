@@ -80,6 +80,12 @@ def _init_device(device_ip: str):
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the Hinge scrape/score/opener pipeline")
     parser.add_argument("--unrestricted", action="store_true", help="Skip confirmations for dislike/send")
+    parser.add_argument(
+        "--profiles",
+        type=int,
+        default=1,
+        help="Number of profiles to process before exiting (default: 1)",
+    )
     return parser.parse_args()
 
 
@@ -120,19 +126,18 @@ def _handle_send_like_anyway(device, width: int, height: int) -> bool:
         return False
 
 
-def main() -> int:
-    args = _parse_args()
-    _force_gemini_env()
-
-    device_ip = "127.0.0.1"
-    max_scrolls = 40
-    scroll_step = 700
-
-    device, width, height = _init_device(device_ip)
-    if not device or not width or not height:
-        print("Device/size missing; cannot proceed.")
-        return 1
-
+def _run_single_profile(
+    device,
+    width: int,
+    height: int,
+    args: argparse.Namespace,
+    max_scrolls: int,
+    scroll_step: int,
+    profile_idx: int,
+    total_profiles: int,
+) -> int:
+    if total_profiles > 1:
+        print(f"[RUN] profile {profile_idx + 1}/{total_profiles}")
     _clear_crops_folder()
     _log("[UI] Single-pass scan (slow scroll, capture as you go)...")
     scan_result = _scan_profile_single_pass(
@@ -672,6 +677,37 @@ def main() -> int:
         print(summary)
     except Exception:
         pass
+
+    return 0
+
+
+def main() -> int:
+    args = _parse_args()
+    _force_gemini_env()
+
+    device_ip = "127.0.0.1"
+    max_scrolls = 40
+    scroll_step = 700
+
+    device, width, height = _init_device(device_ip)
+    if not device or not width or not height:
+        print("Device/size missing; cannot proceed.")
+        return 1
+
+    total_profiles = max(1, int(args.profiles))
+    for idx in range(total_profiles):
+        rc = _run_single_profile(
+            device,
+            width,
+            height,
+            args,
+            max_scrolls,
+            scroll_step,
+            idx,
+            total_profiles,
+        )
+        if rc:
+            return rc
 
     return 0
 
