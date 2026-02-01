@@ -46,9 +46,21 @@ cd app
 uv run python start.py
 ```
 
+Log a match
+```
+cd app
+uv run python log_match.py
+```
+Workflow:
+- Enter a name (partial ok), optionally age/height
+- Pick the correct liked profile from the list
+- Enter match time (supports formats like `2026-01-25 16:49` or `25 Jan 16:49`)
+- The script updates `profiles.db` with `matched=1` and `match_time`
+
 Options
 - `--unrestricted`: skips confirmations before dislike and send priority like
 - `--profiles N`: process N profiles then exit (default: 1)
+- `--verbose`: enable verbose console logs (includes `[SCROLL]` and `[PHOTO]`)
 
 Outputs
 - `profiles.db` at repo root (created on first successful insert)

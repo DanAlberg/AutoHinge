@@ -32,7 +32,7 @@ def LLM1_VISUAL() -> str:
         '    "Facial Symmetry Level": "",\n'
         '    "Indicators of Fitness or Lifestyle": "",\n'
         '    "Overall Visual Appeal Vibe": "",\n'
-        '    "Apparent Age Range Category": "",\n'
+        '    "Apparent Age (Years)": "",\n'
         '    "Attire and Style Indicators": "",\n'
         '    "Body Language and Expression": "",\n'
         '    "Visible Enhancements or Features": "",\n'
@@ -55,7 +55,7 @@ def LLM1_VISUAL() -> str:
         "- Provide a detailed, visual summary of the main subject: clothing, pose, activity, background, "
         "facial features when visible, skin tone, build, grooming, accessories, and overall presentation. "
         "Unbiased, accurate responses are required. Conventionally unattractive people should be labelled as so, false positivity should be avoided.\n\n"
-        "Visual traits allowed values (select exactly one unless it says multiple):\n\n"
+        "Visual traits allowed values (select exactly one unless it says multiple; for Apparent Age (Years) use an integer):\n\n"
         '"Face Visibility Quality": "Clear face in 3+ photos", "Clear face in 1-2 photos", "Face often partially obscured", "Face mostly not visible"\n'
         '"Photo Authenticity / Editing Level": "No obvious filters", "Some filters or mild editing", "Heavy filters/face smoothing", "Unclear"\n'
         '"Apparent Body Fat Level": "Low", "Average", "High", "Very high", "Unclear"\n'
@@ -67,7 +67,7 @@ def LLM1_VISUAL() -> str:
         '"Facial Symmetry Level": "Very high", "High", "Moderate", "Low"\n'
         '"Indicators of Fitness or Lifestyle": "Visible muscle tone", "Athletic poses", "Sporty/athletic clothing", "Outdoor/active settings", "Gym/fitness context visible", "Sedentary/lounging poses", "No visible fitness indicators"\n'
         '"Overall Visual Appeal Vibe": "Very low-key/understated", "Natural/effortless", "Polished/elegant", "High-energy/adventurous", "Playful/flirty", "Sensual/alluring", "Edgy/alternative"\n'
-        '"Apparent Age Range Category": "Late teens/early 20s (18-22)", "Early-mid 20s (23-26)", "Mid-late 20s (27-29)", "Early 30s (30-33)", "Mid 30s (34-37)", "Late 30s/early 40s (38-42)", "Mid 40s+ (43+)"\n'
+        '"Apparent Age (Years)": integer estimate (e.g., 27). Leave empty if unclear.\n'
         '"Attire and Style Indicators": "Very modest/covered", "Casual/comfortable", "Low-key/natural", "Polished/elegant", "Sporty/active", "Form-fitting/suggestive", "Highly revealing", "Edgy/alternative"\n'
         '"Body Language and Expression": "Shy/reserved", "Relaxed/casual", "Approachable/open", "Confident/engaging", "Playful/flirty", "Energetic/vibrant"\n'
         '"Visible Enhancements or Features": "None visible", "Glasses", "Sunglasses", "Makeup (light)", "Makeup (heavy)", "Jewelry", "Painted nails", "Very long nails (2cm+)", "Hair extensions/wig (obvious)", "False eyelashes (obvious)", "Hat/cap/beanie (worn in most photos)"\n'

@@ -16,7 +16,7 @@ VISUAL_TRAIT_FIELDS: List[Tuple[str, str]] = [
     ("Facial Symmetry Level", "Facial_Symmetry_Level"),
     ("Indicators of Fitness or Lifestyle", "Indicators_of_Fitness_or_Lifestyle"),
     ("Overall Visual Appeal Vibe", "Overall_Visual_Appeal_Vibe"),
-    ("Apparent Age Range Category", "Apparent_Age_Range_Category"),
+    ("Apparent Age (Years)", "Apparent_Age_Years"),
     ("Attire and Style Indicators", "Attire_and_Style_Indicators"),
     ("Body Language and Expression", "Body_Language_and_Expression"),
     ("Visible Enhancements or Features", "Visible_Enhancements_or_Features"),
@@ -44,7 +44,7 @@ def init_db(db_path: Optional[str] = None) -> None:
     """
     Initialize the SQLite database with WAL mode and the flattened profiles table.
     Schema mirrors extracted profile fields (core biometrics, prompts, poll, photos, visual traits),
-    LLM2 enrichment, and score. Dedup is enforced via UNIQUE(Name COLLATE NOCASE, Age, Height_cm).
+    LLM2 enrichment, and long/short scores. Dedup is enforced via UNIQUE(Name COLLATE NOCASE, Age, Height_cm).
     """
     db_path = db_path or get_db_path()
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -115,7 +115,7 @@ def init_db(db_path: Optional[str] = None) -> None:
                 Facial_Symmetry_Level TEXT,
                 Indicators_of_Fitness_or_Lifestyle TEXT,
                 Overall_Visual_Appeal_Vibe TEXT,
-                Apparent_Age_Range_Category TEXT,
+                Apparent_Age_Years INTEGER,
                 Attire_and_Style_Indicators TEXT,
                 Body_Language_and_Expression TEXT,
                 Visible_Enhancements_or_Features TEXT,
@@ -142,27 +142,20 @@ def init_db(db_path: Optional[str] = None) -> None:
                 matched_university_name TEXT,
                 university_modifier INTEGER,
                 -- Derived
-                score INTEGER,
+                long_score INTEGER,
+                short_score INTEGER,
                 score_breakdown TEXT,
                 timestamp TEXT,
-                -- Opener strategy result (new 5-style schema)
-                playful REAL,
-                flirty REAL,
-                warm REAL,
-                relatable REAL,
-                direct REAL,
-                overall_confidence REAL,
-                rationale TEXT,
                 -- Opening messages (JSON blob of 10 generated openers)
                 opening_messages_json TEXT,
                 -- Opening pick (full JSON of selection) and chosen text for analysis
                 opening_pick_json TEXT,
                 opening_pick_text TEXT,
-                -- Verdict (LIKE/DISLIKE) + reason
+                -- Verdict (LIKE/DISLIKE)
                 verdict TEXT,
-                decision_reason TEXT,
-                -- Machine-readable LLM metrics (JSON per row)
-                llm_metrics_json TEXT
+                -- Match logging
+                matched INTEGER DEFAULT 0,
+                match_time TEXT
             );
             """
         )
@@ -175,6 +168,8 @@ def init_db(db_path: Optional[str] = None) -> None:
             """
         )
         extra_cols = [
+            "long_score INTEGER",
+            "short_score INTEGER",
             "score_breakdown TEXT",
             "Poll_question TEXT",
             "Poll_answer_1 TEXT",
@@ -191,7 +186,7 @@ def init_db(db_path: Optional[str] = None) -> None:
             "Facial_Symmetry_Level TEXT",
             "Indicators_of_Fitness_or_Lifestyle TEXT",
             "Overall_Visual_Appeal_Vibe TEXT",
-            "Apparent_Age_Range_Category TEXT",
+            "Apparent_Age_Years INTEGER",
             "Attire_and_Style_Indicators TEXT",
             "Body_Language_and_Expression TEXT",
             "Visible_Enhancements_or_Features TEXT",
@@ -204,93 +199,24 @@ def init_db(db_path: Optional[str] = None) -> None:
             "Visible_Tattoo_Level TEXT",
             "Visible_Piercing_Level TEXT",
             "Short_Term_Hookup_Orientation_Signals TEXT",
-            "playful REAL",
-            "flirty REAL",
-            "warm REAL",
-            "relatable REAL",
-            "direct REAL",
-            "overall_confidence REAL",
-            "rationale TEXT",
             "opening_messages_json TEXT",
             "opening_pick_json TEXT",
             "opening_pick_text TEXT",
             "verdict TEXT",
-            "decision_reason TEXT",
-            "llm_metrics_json TEXT",
+            "matched INTEGER DEFAULT 0",
+            "match_time TEXT",
         ]
         for col in extra_cols:
             try:
                 cur.execute(f"ALTER TABLE profiles ADD COLUMN {col};")
             except Exception:
                 pass
-
         con.commit()
     finally:
         con.close()
 
 
 # ---------------------- Opener results logging ----------------------
-
-def json_dumps_safe(obj: Any) -> str:
-    try:
-        import json
-        return json.dumps(obj if obj is not None else [])
-    except Exception:
-        return "[]"
-
-
-def update_profile_opener_fields(
-    profile_id: int,
-    result: Dict[str, Any],
-    db_path: Optional[str] = None
-) -> None:
-    """
-    Persist opening-style JSON fields onto the existing profiles row (one row per individual).
-      - style_weights (dict with keys: playful, flirty, warm, relatable, direct)
-      - overall_confidence (float)
-      - rationale (str)
-    """
-    if not isinstance(result, dict):
-        result = {}
-    style_weights = result.get("style_weights") or {}
-
-    def _to_float(x):
-        try:
-            return float(x)
-        except Exception:
-            return 0.0
-
-    vals = {
-        "playful": _to_float(style_weights.get("playful")),
-        "flirty": _to_float(style_weights.get("flirty")),
-        "warm": _to_float(style_weights.get("warm")),
-        "relatable": _to_float(style_weights.get("relatable")),
-        "direct": _to_float(style_weights.get("direct")),
-        "overall_confidence": _to_float(result.get("overall_confidence")),
-        "rationale": result.get("rationale") or ""
-    }
-
-    db_path = db_path or get_db_path()
-    con = sqlite3.connect(db_path)
-    try:
-        cur = con.cursor()
-        cur.execute(
-            """
-            UPDATE profiles SET
-                playful = :playful,
-                flirty = :flirty,
-                warm = :warm,
-                relatable = :relatable,
-                direct = :direct,
-                overall_confidence = :overall_confidence,
-                rationale = :rationale
-            WHERE id = :id
-            """,
-            {**vals, "id": int(profile_id)}
-        )
-        con.commit()
-    finally:
-        con.close()
 
 
 def update_profile_opening_messages_json(
@@ -359,83 +285,46 @@ def update_profile_opening_pick(
 def update_profile_verdict(
     profile_id: int,
     verdict: str,
-    decision_reason: str = "",
     db_path: Optional[str] = None
 ) -> None:
     """
-    Persist final verdict (LIKE/DISLIKE) and a short decision_reason to the same row.
+    Persist final verdict (LIKE/DISLIKE) to the same row.
     """
     db_path = db_path or get_db_path()
     con = sqlite3.connect(db_path)
     try:
         cur = con.cursor()
         cur.execute(
-            "UPDATE profiles SET verdict = ?, decision_reason = ? WHERE id = ?",
-            ((verdict or "").strip().upper(), decision_reason or "", int(profile_id))
+            "UPDATE profiles SET verdict = ? WHERE id = ?",
+            ((verdict or "").strip().upper(), int(profile_id))
         )
         con.commit()
     finally:
         con.close()
 
 
-def update_profile_llm_metrics(
+def update_profile_match(
     profile_id: int,
-    metrics_update: Dict[str, Any],
+    matched: bool = True,
+    match_time: Optional[str] = None,
     db_path: Optional[str] = None
 ) -> None:
     """
-    Merge provided LLM metrics dict into the row's llm_metrics_json field.
-    metrics_update shape example:
-      {"profile_scrape": {"model": "gpt-5-mini", "duration_ms": 123, "ts": "..."}, ...}
-    Shallow merge by top-level key (per call name).
+    Persist match flags onto the existing profiles row.
+    match_time should be an ISO-8601 string, or None to default to now().
     """
-    if not isinstance(metrics_update, dict) or not metrics_update:
-        return
     db_path = db_path or get_db_path()
+    if match_time is None:
+        match_time = datetime.now().isoformat(timespec="seconds")
+    matched_val = 1 if matched else 0
     con = sqlite3.connect(db_path)
     try:
         cur = con.cursor()
-        cur.execute("SELECT llm_metrics_json FROM profiles WHERE id = ? LIMIT 1;", (int(profile_id),))
-        row = cur.fetchone()
-        try:
-            import json as _json
-            existing = _json.loads(row[0]) if row and row[0] else {}
-            if not isinstance(existing, dict):
-                existing = {}
-        except Exception:
-            existing = {}
-        # Shallow merge
-        merged = {**existing, **metrics_update}
-        try:
-            json_text = _json.dumps(merged, ensure_ascii=False)
-        except Exception:
-            json_text = "{}"
         cur.execute(
-            "UPDATE profiles SET llm_metrics_json = ? WHERE id = ?",
-            (json_text, int(profile_id))
+            "UPDATE profiles SET matched = ?, match_time = ? WHERE id = ?",
+            (matched_val, match_time, int(profile_id))
         )
         con.commit()
-    finally:
-        con.close()
-
-
-# ---------------------- Opener lookup helpers ----------------------
-
-def get_profile_id_by_unique(name: str, age: int, height_cm: int, db_path: Optional[str] = None) -> Optional[int]:
-    """
-    Lookup an existing profile row id by the composite UNIQUE (Name NOCASE, Age, Height_cm).
-    Returns the latest matching id if found, else None.
-    """
-    db_path = db_path or get_db_path()
-    con = sqlite3.connect(db_path)
-    try:
-        cur = con.cursor()
-        cur.execute(
-            "SELECT id FROM profiles WHERE Name = ? COLLATE NOCASE AND Age = ? AND Height_cm = ? ORDER BY id DESC LIMIT 1;",
-            (name or "", int(age), int(height_cm))
-        )
-        row = cur.fetchone()
-        return int(row[0]) if row else None
     finally:
         con.close()
 
@@ -571,6 +460,19 @@ def _flatten_extracted(extracted: Dict[str, Any]) -> Dict[str, Any]:
         return str(value)
 
     visual_cols = {col: _clean_text(traits.get(label)) for label, col in VISUAL_TRAIT_FIELDS}
+    visual_age_raw = visual_cols.get("Apparent_Age_Years")
+    if visual_age_raw not in ("", None):
+        import re
+        m = re.search(r"\d+", str(visual_age_raw))
+        if m:
+            try:
+                visual_cols["Apparent_Age_Years"] = int(m.group(0))
+            except Exception:
+                visual_cols["Apparent_Age_Years"] = None
+        else:
+            visual_cols["Apparent_Age_Years"] = None
+    else:
+        visual_cols["Apparent_Age_Years"] = None
 
     row = {
         "Name": name.strip(),
@@ -645,7 +547,8 @@ def _flatten_enrichment(enrichment: Dict[str, Any]) -> Dict[str, Any]:
 def upsert_profile_flat(
     extracted_profile: Dict[str, Any],
     enrichment: Dict[str, Any],
-    score: int,
+    long_score: int,
+    short_score: int,
     score_breakdown: Optional[str] = None,
     timestamp: Optional[str] = None,
     db_path: Optional[str] = None
@@ -666,7 +569,8 @@ def upsert_profile_flat(
     row = {
         **core,
         **enrich,
-        "score": int(score),
+        "long_score": int(long_score),
+        "short_score": int(short_score),
         "score_breakdown": (score_breakdown or ""),
         "timestamp": ts,
     }
@@ -683,7 +587,7 @@ def upsert_profile_flat(
         *visual_cols,
         "home_country_iso","home_country_confidence","home_country_modifier","job_normalized_title","job_est_salary_gbp",
         "job_band","job_confidence","job_band_reason","job_modifier","university_elite","matched_university_name","university_modifier",
-        "score","score_breakdown","timestamp"
+        "long_score","short_score","score_breakdown","timestamp"
     ]
     placeholders = ",".join([f":{c}" for c in cols])
     col_list = ",".join(cols)

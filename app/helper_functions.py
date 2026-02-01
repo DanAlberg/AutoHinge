@@ -68,7 +68,3 @@ def open_hinge(device) -> None:
     time.sleep(1)
 
 
-def reset_hinge_app(device) -> None:
-    device.shell("am force-stop co.hinge.app")
-    time.sleep(0.5)
-    open_hinge(device)

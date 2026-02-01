@@ -324,7 +324,7 @@ def _build_extracted_profile(
         "Facial Symmetry Level",
         "Indicators of Fitness or Lifestyle",
         "Overall Visual Appeal Vibe",
-        "Apparent Age Range Category",
+        "Apparent Age (Years)",
         "Attire and Style Indicators",
         "Body Language and Expression",
         "Visible Enhancements or Features",

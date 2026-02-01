@@ -15,7 +15,7 @@ from helper_functions import ensure_adb_running, connect_device, get_screen_reso
 from extraction import run_llm1_visual, run_profile_eval_llm, _build_extracted_profile
 from openers import run_llm3_long, run_llm3_short, run_llm4
 from profile_utils import _get_core, _norm_value
-from runtime import _is_run_json_enabled, _log
+from runtime import _is_run_json_enabled, _log, set_verbose
 from scoring import _classify_preference_flag, _format_score_table, _score_profile_long, _score_profile_short
 from sqlite_store import (
     upsert_profile_flat,
@@ -80,6 +80,7 @@ def _init_device(device_ip: str):
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the Hinge scrape/score/opener pipeline")
     parser.add_argument("--unrestricted", action="store_true", help="Skip confirmations for dislike/send")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose [SCROLL]/[PHOTO] logging")
     parser.add_argument(
         "--profiles",
         type=int,
@@ -108,8 +109,14 @@ def _tap_bounds(device, bounds: Tuple[int, int, int, int], width: int, height: i
     return tap_x, tap_y
 
 
+_SEND_ANYWAY_CHECKED = False
+
+
 def _handle_send_like_anyway(device, width: int, height: int) -> bool:
-    # TODO: When batch runs are added, only check once per batch.
+    global _SEND_ANYWAY_CHECKED
+    if _SEND_ANYWAY_CHECKED:
+        return False
+    _SEND_ANYWAY_CHECKED = True
     try:
         time.sleep(0.5)
         sheet_xml = _dump_ui_xml(device)
@@ -198,6 +205,8 @@ def _run_single_profile(
     elif dating_intention == _norm_value("Life partner"):
         if decision == "short_pickup":
             decision = "reject"
+
+    print("\n" + score_table)
 
     manual_override = ""
     try:
@@ -527,7 +536,6 @@ def _run_single_profile(
 
     if _is_run_json_enabled():
         print(json.dumps(out, indent=2, ensure_ascii=False))
-    print("\n" + score_table)
 
     out_path = ""
     try:
@@ -550,9 +558,15 @@ def _run_single_profile(
             f"decision={decision} long_score={long_score} short_score={short_score}\n\n"
             + score_table
         )
-        pid = upsert_profile_flat(extracted, eval_result, int(long_score), score_breakdown=score_breakdown)
+        pid = upsert_profile_flat(
+            extracted,
+            eval_result,
+            long_score=int(long_score),
+            short_score=int(short_score),
+            score_breakdown=score_breakdown,
+        )
         if pid is not None:
-            update_profile_verdict(pid, decision, "")
+            update_profile_verdict(pid, decision)
             if isinstance(llm3_result, dict) and llm3_result:
                 update_profile_opening_messages_json(pid, llm3_result)
             if isinstance(llm4_result, dict) and llm4_result:
@@ -684,6 +698,7 @@ def _run_single_profile(
 def main() -> int:
     args = _parse_args()
     _force_gemini_env()
+    set_verbose(args.verbose)
 
     device_ip = "127.0.0.1"
     max_scrolls = 40

@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from profile_utils import _get_core, _get_visual, _norm_value, _split_csv
 
@@ -6,24 +6,30 @@ HOME_COUNTRY_PLUS2 = {"NO", "SE", "DK", "FI", "IS", "EE", "LV", "LT", "UA", "RU"
 HOME_COUNTRY_PLUS1 = {"IE", "DE", "FR", "NL", "BE", "LU", "CH", "AT", "IT", "ES", "PT", "PL", "CZ", "CA", "US", "AU", "NZ", "JP", "KR", "SG", "IL", "AE"}
 HOME_COUNTRY_MINUS1 = {"AR", "BR", "CL", "CO", "PE", "EC", "UY", "PY", "BO", "VE", "GY", "SR", "ID", "MY", "TH", "VN", "PH", "KH", "LA", "MM", "BN"}
 
-AGE_RANGE_MIDPOINTS = {
-    "Late teens/early 20s (18-22)": 20.0,
-    "Early-mid 20s (23-26)": 24.5,
-    "Mid-late 20s (27-29)": 28.0,
-    "Early 30s (30-33)": 31.5,
-    "Mid 30s (34-37)": 35.5,
-    "Late 30s/early 40s (38-42)": 40.0,
-    "Mid 40s+ (43+)": 45.0,
-}
-AGE_RANGE_BOUNDS = {
-    "Late teens/early 20s (18-22)": (18, 22),
-    "Early-mid 20s (23-26)": (23, 26),
-    "Mid-late 20s (27-29)": (27, 29),
-    "Early 30s (30-33)": (30, 33),
-    "Mid 30s (34-37)": (34, 37),
-    "Late 30s/early 40s (38-42)": (38, 42),
-    "Mid 40s+ (43+)": (43, None),
-}
+def _parse_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    s = str(value).strip()
+    if not s:
+        return None
+    import re
+    m = re.search(r"\d+", s)
+    if not m:
+        return None
+    try:
+        return int(m.group(0))
+    except Exception:
+        return None
+
+
+def _calc_age_delta_years(declared_age: Optional[int], apparent_age: Optional[int]) -> Optional[int]:
+    if declared_age is None or apparent_age is None:
+        return None
+    return int(declared_age) - int(apparent_age)
 
 
 # Long Weightings
@@ -347,19 +353,8 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
         record("Profile Eval", "Home Country", home_iso or "(unresolved)", home_score)
 
     # Age delta (logged only)
-    apparent_age = visual_val("Apparent Age Range Category")
-    apparent_mid = AGE_RANGE_MIDPOINTS.get(apparent_age) if isinstance(apparent_age, str) else None
-    apparent_bounds = AGE_RANGE_BOUNDS.get(apparent_age) if isinstance(apparent_age, str) else None
-    age_delta = None
-    if declared_age_int is not None and apparent_mid is not None:
-        in_range = False
-        if apparent_bounds is not None:
-            low, high = apparent_bounds
-            if high is None:
-                in_range = declared_age_int >= low
-            else:
-                in_range = low <= declared_age_int <= high
-        age_delta = 0.0 if in_range else round(float(apparent_mid) - float(declared_age_int), 2)
+    apparent_age_years = _parse_int(visual_val("Apparent Age (Years)"))
+    age_delta_years = _calc_age_delta_years(declared_age_int, apparent_age_years)
 
     score_total = sum(c["delta"] for c in contribs)
 
@@ -369,9 +364,8 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
         "contributions": contribs,
         "signals": {
             "declared_age": declared_age_int,
-            "apparent_age_range": apparent_age if isinstance(apparent_age, str) else "",
-            "apparent_age_range_midpoint": apparent_mid,
-            "age_delta": age_delta,
+            "apparent_age_years": apparent_age_years,
+            "age_delta_years": age_delta_years,
         },
         "profile_eval_inputs": {
             "job_band": (eval_result.get("job") or {}).get("band", ""),
@@ -737,19 +731,8 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
         record("Profile Eval", "University Elite", "Yes", +10)
 
     # Age delta (logged only)
-    apparent_age = visual_val("Apparent Age Range Category")
-    apparent_mid = AGE_RANGE_MIDPOINTS.get(apparent_age) if isinstance(apparent_age, str) else None
-    apparent_bounds = AGE_RANGE_BOUNDS.get(apparent_age) if isinstance(apparent_age, str) else None
-    age_delta = None
-    if declared_age_int is not None and apparent_mid is not None:
-        in_range = False
-        if apparent_bounds is not None:
-            low, high = apparent_bounds
-            if high is None:
-                in_range = declared_age_int >= low
-            else:
-                in_range = low <= declared_age_int <= high
-        age_delta = 0.0 if in_range else round(float(apparent_mid) - float(declared_age_int), 2)
+    apparent_age_years = _parse_int(visual_val("Apparent Age (Years)"))
+    age_delta_years = _calc_age_delta_years(declared_age_int, apparent_age_years)
 
     score_total = sum(c["delta"] for c in contribs)
 
@@ -760,9 +743,8 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
         "contributions": contribs,
         "signals": {
             "declared_age": declared_age_int,
-            "apparent_age_range": apparent_age if isinstance(apparent_age, str) else "",
-            "apparent_age_range_midpoint": apparent_mid,
-            "age_delta": age_delta,
+            "apparent_age_years": apparent_age_years,
+            "age_delta_years": age_delta_years,
         },
         "profile_eval_inputs": {
             "job_band": (eval_result.get("job") or {}).get("band", ""),
@@ -800,10 +782,10 @@ def _format_score_table(label: str, score_result: Dict[str, Any]) -> str:
     lines.append(f"Final score: {score}")
     lines.append(f"Hard kills: {len(hard_kills)}")
     lines.append(
-        "Age signals: declared_age={declared_age} apparent_midpoint={apparent_age_range_midpoint} age_delta={age_delta}".format(
+        "Age signals: declared_age={declared_age} apparent_age_years={apparent_age_years} age_delta_years={age_delta_years}".format(
             declared_age=signals.get("declared_age"),
-            apparent_age_range_midpoint=signals.get("apparent_age_range_midpoint"),
-            age_delta=signals.get("age_delta"),
+            apparent_age_years=signals.get("apparent_age_years"),
+            age_delta_years=signals.get("age_delta_years"),
         )
     )
     lines.append(
