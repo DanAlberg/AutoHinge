@@ -1459,7 +1459,7 @@ def _scroll_once(
         expected = y_start - y_end
     else:
         # direction == "up": finger swipes down.
-        y_start = int(top + area_h * 0.15)
+        y_start = int(top + area_h * 0.20)
         y_end = min(int(bottom - area_h * 0.1), y_start + dist)
         swipe(device, x, y_start, x, y_end, duration_ms)
         expected = -(y_end - y_start)

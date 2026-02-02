@@ -64,10 +64,6 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     if _norm_value(children) == _norm_value("Have children"):
         record("Core Biometrics", "Children", children, -1000)
 
-    covid = core_val("Covid Vaccine")
-    if str(covid).strip():
-        record("Core Biometrics", "Covid Vaccine", covid, -5)
-
     dating = core_val("Dating Intentions")
     dating_norm = _norm_value(dating)
     if dating_norm == _norm_value("Life partner"):
@@ -406,10 +402,6 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
     children = core_val("Children")
     if _norm_value(children) == _norm_value("Have children"):
         record("Core Biometrics", "Children", children, -20)
-
-    covid = core_val("Covid Vaccine")
-    if str(covid).strip():
-        record("Core Biometrics", "Covid Vaccine", covid, -5)
 
     dating = core_val("Dating Intentions")
     dating_norm = _norm_value(dating)

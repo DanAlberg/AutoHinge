@@ -226,6 +226,8 @@ def _run_single_profile(
         print(f"[RUN] profile {profile_idx + 1}/{total_profiles}")
     t_start = time.perf_counter()
     timings: Dict[str, Any] = {"input_wait_s": 0.0}
+    user_requested_stop = False
+    irreversible_action_taken = False
     out_path = ""
     table_path = ""
     log_state: Dict[str, Any] = {}
@@ -404,12 +406,13 @@ def _run_single_profile(
                 short_delta=short_score - T_SHORT,
             )
         )
-        t0 = time.perf_counter()
-        override = input("Override decision? (long/short/reject, blank to keep): ").strip().lower()
-        timings["input_wait_s"] = timings.get("input_wait_s", 0.0) + (time.perf_counter() - t0)
-        if override in {"long", "short", "reject"}:
-            manual_override = override
-            decision = {"long": "long_pickup", "short": "short_pickup", "reject": "reject"}[override]
+        if not args.unrestricted:
+            t0 = time.perf_counter()
+            override = input("Override decision? (long/short/reject, blank to keep): ").strip().lower()
+            timings["input_wait_s"] = timings.get("input_wait_s", 0.0) + (time.perf_counter() - t0)
+            if override in {"long", "short", "reject"}:
+                manual_override = override
+                decision = {"long": "long_pickup", "short": "short_pickup", "reject": "reject"}[override]
     except Exception:
         pass
     if log_state:
@@ -694,6 +697,7 @@ def _run_single_profile(
                 try:
                     tap_x, tap_y = _tap_bounds(device, dislike_bounds, width, height)
                     target_action = {"action": "dislike", "tap_coords": [tap_x, tap_y]}
+                    irreversible_action_taken = True
                 except Exception as e:
                     print(f"[DISLIKE] tap failed: {e}")
             else:
@@ -704,28 +708,6 @@ def _run_single_profile(
     if log_state:
         log_state["target_action"] = target_action
         _write_run_log(out_path, log_state)
-
-    # SQL logging
-    try:
-        score_breakdown = (
-            f"decision={decision} long_score={long_score} short_score={short_score}\n\n"
-            + score_table
-        )
-        pid = upsert_profile_flat(
-            extracted,
-            eval_result,
-            long_score=int(long_score),
-            short_score=int(short_score),
-            score_breakdown=score_breakdown,
-        )
-        if pid is not None:
-            update_profile_verdict(pid, decision)
-            if isinstance(llm3_result, dict) and llm3_result:
-                update_profile_opening_messages_json(pid, llm3_result)
-            if isinstance(llm4_result, dict) and llm4_result:
-                update_profile_opening_pick(pid, llm4_result)
-    except Exception as e:
-        print(f"[sql] log failed: {e}")
 
     _backup_db_if_configured()
 
@@ -784,14 +766,41 @@ def _run_single_profile(
                 target_action["comment_text"] = chosen_text.strip()
                 target_action["send_priority_coords"] = [tap_x, tap_y]
                 _handle_send_like_anyway(device, width, height)
+                irreversible_action_taken = True
             except Exception as e:
                 raise RuntimeError(f"Send priority like failed: {e}")
         else:
-            print("[SEND] skipped by user")
+            print("[SEND] skipped by user; ending run after this profile")
+            user_requested_stop = True
 
-        if log_state:
-            log_state["target_action"] = target_action
-            _write_run_log(out_path, log_state)
+    if log_state:
+        log_state["target_action"] = target_action
+        _write_run_log(out_path, log_state)
+
+    # SQL logging (only after irreversible action)
+    if irreversible_action_taken:
+        try:
+            score_breakdown = (
+                f"decision={decision} long_score={long_score} short_score={short_score}\n\n"
+                + score_table
+            )
+            pid = upsert_profile_flat(
+                extracted,
+                eval_result,
+                long_score=int(long_score),
+                short_score=int(short_score),
+                score_breakdown=score_breakdown,
+            )
+            if pid is not None:
+                update_profile_verdict(pid, decision)
+                if isinstance(llm3_result, dict) and llm3_result:
+                    update_profile_opening_messages_json(pid, llm3_result)
+                if isinstance(llm4_result, dict) and llm4_result:
+                    update_profile_opening_pick(pid, llm4_result)
+        except Exception as e:
+            print(f"[sql] log failed: {e}")
+    else:
+        print("[sql] skipped (no irreversible action taken)")
 
     t_end = time.perf_counter()
     timings["input_wait_s"] = round(float(timings.get("input_wait_s", 0.0)), 2)
@@ -858,6 +867,9 @@ def _run_single_profile(
     except Exception:
         pass
 
+    if user_requested_stop:
+        return 2
+
     return 0
 
 
@@ -887,6 +899,8 @@ def main() -> int:
             idx,
             total_profiles,
         )
+        if rc == 2:
+            break
         if rc:
             return rc
 
