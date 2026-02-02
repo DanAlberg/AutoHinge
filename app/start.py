@@ -8,7 +8,7 @@ import os
 import shutil
 import time
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import config  # ensure .env is loaded early
 
@@ -43,6 +43,7 @@ from ui_scan import (
     _find_send_like_anyway_bounds,
     _find_send_priority_like_bounds,
     _find_visible_photo_bounds,
+    _is_loading_screen,
     _is_square_bounds,
     _match_photo_bounds_by_hash,
     _parse_ui_nodes,
@@ -105,6 +106,111 @@ def _confirm_action(action_label: str, unrestricted: bool, timings: Optional[Dic
         return False
 
 
+def _extract_openers_list(llm3_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    openers = llm3_result.get("openers") if isinstance(llm3_result, dict) else None
+    if not isinstance(openers, list):
+        return []
+    cleaned: List[Dict[str, Any]] = []
+    for o in openers:
+        if not isinstance(o, dict):
+            continue
+        text = (o.get("text") or "").strip()
+        if not text:
+            continue
+        cleaned.append(
+            {
+                "text": text,
+                "main_target_type": (o.get("main_target_type") or "").strip(),
+                "main_target_id": (o.get("main_target_id") or "").strip(),
+                "hook_basis": (o.get("hook_basis") or "").strip(),
+            }
+        )
+    return cleaned
+
+
+def _default_opener_index(openers: List[Dict[str, Any]], llm4_result: Dict[str, Any]) -> Optional[int]:
+    if not openers:
+        return None
+    idx_raw = llm4_result.get("chosen_index") if isinstance(llm4_result, dict) else None
+    try:
+        idx = int(idx_raw)
+        if 0 <= idx < len(openers):
+            return idx
+    except Exception:
+        pass
+    chosen_text = (llm4_result.get("chosen_text") or "").strip() if isinstance(llm4_result, dict) else ""
+    if chosen_text:
+        for i, o in enumerate(openers):
+            if o.get("text") == chosen_text:
+                return i
+    return 0 if openers else None
+
+
+def _choose_opening_message(
+    llm3_result: Dict[str, Any],
+    llm4_result: Dict[str, Any],
+    unrestricted: bool,
+    timings: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, Any], bool]:
+    openers = _extract_openers_list(llm3_result)
+    updated = dict(llm4_result or {})
+    idx = _default_opener_index(openers, updated)
+    if idx is not None:
+        sel = openers[idx]
+        updated["chosen_index"] = idx
+        updated["chosen_text"] = sel.get("text", updated.get("chosen_text", ""))
+        updated["main_target_type"] = sel.get("main_target_type", updated.get("main_target_type", ""))
+        updated["main_target_id"] = sel.get("main_target_id", updated.get("main_target_id", ""))
+
+    if unrestricted:
+        return updated, True
+
+    while True:
+        chosen_text = (updated.get("chosen_text") or "").strip()
+        chosen_target = (updated.get("main_target_id") or "").strip()
+        chosen_idx = updated.get("chosen_index")
+        idx_label = f"LLM4 #{int(chosen_idx) + 1}" if isinstance(chosen_idx, int) else "LLM4"
+        print(f"[SEND] planned opener ({idx_label}, target={chosen_target or 'unknown'}): \"{chosen_text}\"")
+        prompt = "Enter y to send, n to skip"
+        if openers:
+            prompt += ", or options"
+        prompt += ": "
+        try:
+            t0 = time.perf_counter()
+            resp = input(prompt).strip().lower()
+            if isinstance(timings, dict):
+                timings["input_wait_s"] = timings.get("input_wait_s", 0.0) + (time.perf_counter() - t0)
+        except Exception:
+            return updated, False
+        if resp in {"y", "yes"}:
+            return updated, True
+        if resp in {"n", "no", ""}:
+            return updated, False
+        if resp == "options" and openers:
+            for i, o in enumerate(openers, start=1):
+                tgt = o.get("main_target_id") or ""
+                print(f"[SEND] {i}. ({tgt}) {o.get('text')}")
+            try:
+                t0 = time.perf_counter()
+                pick_raw = input(f"Pick 1-{len(openers)} (blank to cancel): ").strip().lower()
+                if isinstance(timings, dict):
+                    timings["input_wait_s"] = timings.get("input_wait_s", 0.0) + (time.perf_counter() - t0)
+            except Exception:
+                return updated, False
+            if not pick_raw:
+                continue
+            if pick_raw.isdigit():
+                pick = int(pick_raw)
+                if 1 <= pick <= len(openers):
+                    sel = openers[pick - 1]
+                    updated["chosen_index"] = pick - 1
+                    updated["chosen_text"] = sel.get("text", updated.get("chosen_text", ""))
+                    updated["main_target_type"] = sel.get("main_target_type", updated.get("main_target_type", ""))
+                    updated["main_target_id"] = sel.get("main_target_id", updated.get("main_target_id", ""))
+                    continue
+        print("[SEND] invalid selection")
+
+
 def _tap_bounds(device, bounds: Tuple[int, int, int, int], width: int, height: int) -> Tuple[int, int]:
     tap_x, tap_y = _bounds_center(bounds)
     tap_x = max(0, min(width - 1, tap_x))
@@ -136,6 +242,28 @@ def _handle_send_like_anyway(device, width: int, height: int) -> bool:
     except Exception as e:
         print(f"[UPSSELL] failed to dismiss: {e}")
         return False
+
+
+def _wait_for_loading_to_clear(
+    device,
+    max_wait_s: int = 3,
+    interval_s: float = 1.0,
+    context: str = "",
+) -> bool:
+    xml = _dump_ui_xml(device)
+    nodes = _parse_ui_nodes(xml)
+    if not _is_loading_screen(nodes):
+        return True
+    label = f" ({context})" if context else ""
+    print(f"[LOAD] loading screen detected{label}; waiting up to {max_wait_s}s")
+    for _ in range(max_wait_s):
+        time.sleep(interval_s)
+        xml = _dump_ui_xml(device)
+        nodes = _parse_ui_nodes(xml)
+        if not _is_loading_screen(nodes):
+            return True
+    print(f"[LOAD] loading screen stuck after {max_wait_s}s; exiting")
+    return False
 
 
 def _backup_db_if_configured() -> None:
@@ -228,6 +356,8 @@ def _run_single_profile(
     timings: Dict[str, Any] = {"input_wait_s": 0.0}
     user_requested_stop = False
     irreversible_action_taken = False
+    loading_stuck = False
+    send_approved = True
     out_path = ""
     table_path = ""
     log_state: Dict[str, Any] = {}
@@ -270,6 +400,8 @@ def _run_single_profile(
     except Exception as e:
         print(f"[LOG] failed to init run log: {e}")
     _clear_crops_folder()
+    if not _wait_for_loading_to_clear(device, context="start"):
+        return 3
     _log("[UI] Single-pass scan (slow scroll, capture as you go)...")
     t0 = time.perf_counter()
     scan_result = _scan_profile_single_pass(
@@ -459,8 +591,17 @@ def _run_single_profile(
         if log_state:
             log_state["llm4_result"] = llm4_result
             _write_run_log(out_path, log_state)
+        llm4_result, send_approved = _choose_opening_message(
+            llm3_result, llm4_result, args.unrestricted, timings
+        )
+        if log_state:
+            log_state["llm4_result"] = llm4_result
+            _write_run_log(out_path, log_state)
+        if not send_approved:
+            print("[SEND] skipped by user; ending run after this profile")
+            user_requested_stop = True
         target_id = str(llm4_result.get("main_target_id", "") or "").strip()
-        if target_id:
+        if send_approved and target_id:
             print(f"[TARGET] LLM4 chose target_id={target_id}")
             target_info = _resolve_target_from_ui_map(ui_map, target_id)
             target_action = {"target_id": target_id, **target_info}
@@ -698,6 +839,8 @@ def _run_single_profile(
                     tap_x, tap_y = _tap_bounds(device, dislike_bounds, width, height)
                     target_action = {"action": "dislike", "tap_coords": [tap_x, tap_y]}
                     irreversible_action_taken = True
+                    if not _wait_for_loading_to_clear(device, context="post-dislike"):
+                        loading_stuck = True
                 except Exception as e:
                     print(f"[DISLIKE] tap failed: {e}")
             else:
@@ -712,6 +855,14 @@ def _run_single_profile(
     _backup_db_if_configured()
 
     if decision in {"long_pickup", "short_pickup"}:
+        if not send_approved:
+            user_requested_stop = True
+            if log_state:
+                log_state["target_action"] = target_action
+                _write_run_log(out_path, log_state)
+            if loading_stuck:
+                return 3
+            return 2
         if not isinstance(llm4_result, dict):
             raise RuntimeError("LLM4 missing result; cannot send comment.")
         chosen_text = llm4_result.get("chosen_text")
@@ -760,13 +911,15 @@ def _run_single_profile(
         if not send_bounds:
             raise RuntimeError("Send priority like button not found.")
 
-        if _confirm_action("send priority like", args.unrestricted, timings):
+        if send_approved:
             try:
                 tap_x, tap_y = _tap_bounds(device, send_bounds, width, height)
                 target_action["comment_text"] = chosen_text.strip()
                 target_action["send_priority_coords"] = [tap_x, tap_y]
                 _handle_send_like_anyway(device, width, height)
                 irreversible_action_taken = True
+                if not _wait_for_loading_to_clear(device, context="post-send"):
+                    loading_stuck = True
             except Exception as e:
                 raise RuntimeError(f"Send priority like failed: {e}")
         else:
@@ -866,6 +1019,9 @@ def _run_single_profile(
         print(summary)
     except Exception:
         pass
+
+    if loading_stuck:
+        return 3
 
     if user_requested_stop:
         return 2

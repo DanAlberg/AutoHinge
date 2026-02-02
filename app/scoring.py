@@ -90,6 +90,11 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     elif drugs_norm == _norm_value("Sometimes"):
         record("Core Biometrics", "Drugs", drugs, -20)
 
+    active_status = core_val("Active Status")
+    active_norm = _norm_value(active_status)
+    if active_norm in {_norm_value("now"), _norm_value("today"), _norm_value("active now"), _norm_value("active today")}:
+        record("Core Biometrics", "Active Status", active_status, +5)
+
     sexuality = core_val("Sexuality")
     sexuality_norm = _norm_value(sexuality)
     if sexuality_norm == _norm_value("Bisexual"):
@@ -447,6 +452,11 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
         record("Core Biometrics", "Drugs", drugs, -1000)
     elif drugs_norm == _norm_value("Sometimes"):
         record("Core Biometrics", "Drugs", drugs, -20)
+
+    active_status = core_val("Active Status")
+    active_norm = _norm_value(active_status)
+    if active_norm in {_norm_value("now"), _norm_value("today"), _norm_value("active now"), _norm_value("active today")}:
+        record("Core Biometrics", "Active Status", active_status, +5)
 
     sexuality = core_val("Sexuality")
     sexuality_norm = _norm_value(sexuality)

@@ -7,7 +7,7 @@ app/generated_comments.json
 *.venv
 *.DS_Store
 app/images/*.png
-hinge_ui.xml
+*.xml
 # Logs and outputs
 app/logs/
 app/logs/*.log
@@ -17,6 +17,6 @@ app/images/
 images/
 
 # Database (SQLite)
-profiles.db
-profiles.db-shm
-profiles.db-wal
+*.db-shm
+*.db-wal
+*.db

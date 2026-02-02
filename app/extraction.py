@@ -217,6 +217,7 @@ def _build_extracted_profile(
         "Age",
         "Height",
         "Location",
+        "Active Status",
         "Explicit Ethnicity",
         "Children",
         "Family plans",
@@ -382,5 +383,4 @@ def _build_extracted_profile(
             "Inferred Visual Traits Summary": visual_out
         },
     }
-
 

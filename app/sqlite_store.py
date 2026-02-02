@@ -68,6 +68,7 @@ def init_db(db_path: Optional[str] = None) -> None:
                 Age INTEGER NOT NULL,
                 Height_cm INTEGER NOT NULL,
                 Location TEXT,
+                Active_status TEXT,
                 Ethnicity TEXT,
                 Children TEXT,
                 Family_plans TEXT,
@@ -177,6 +178,7 @@ def init_db(db_path: Optional[str] = None) -> None:
             "Poll_answer_2 TEXT",
             "Poll_answer_3 TEXT",
             "Biometrics_Other_Text TEXT",
+            "Active_status TEXT",
             "Face_Visibility_Quality TEXT",
             "Photo_Authenticity_Editing_Level TEXT",
             "Apparent_Body_Fat_Level TEXT",
@@ -214,6 +216,149 @@ def init_db(db_path: Optional[str] = None) -> None:
             except Exception:
                 pass
         con.commit()
+    finally:
+        con.close()
+
+
+def rebuild_profiles_table(db_path: Optional[str] = None) -> None:
+    db_path = db_path or get_db_path()
+    con = sqlite3.connect(db_path)
+    try:
+        cur = con.cursor()
+        cur.execute("PRAGMA journal_mode=WAL;")
+        cur.execute("PRAGMA synchronous=NORMAL;")
+        cur.execute("PRAGMA table_info(profiles);")
+        existing_info = cur.fetchall()
+        if not existing_info:
+            init_db(db_path)
+            return
+        existing_cols = [row[1] for row in existing_info]
+        existing_meta = {row[1]: row for row in existing_info}
+
+        base_defs = [
+            ("id", "INTEGER PRIMARY KEY"),
+            ("Name", "TEXT NOT NULL"),
+            ("Gender", "TEXT"),
+            ("Sexuality", "TEXT"),
+            ("Age", "INTEGER NOT NULL"),
+            ("Height_cm", "INTEGER NOT NULL"),
+            ("Location", "TEXT"),
+            ("Active_status", "TEXT"),
+            ("Ethnicity", "TEXT"),
+            ("Children", "TEXT"),
+            ("Family_plans", "TEXT"),
+            ("Covid_vaccine", "TEXT"),
+            ("Pets", "TEXT"),
+            ("Zodiac_Sign", "TEXT"),
+            ("Job_title", "TEXT"),
+            ("University", "TEXT"),
+            ("Religious_Beliefs", "TEXT"),
+            ("Home_town", "TEXT"),
+            ("Politics", "TEXT"),
+            ("Languages_spoken", "TEXT"),
+            ("Dating_Intentions", "TEXT"),
+            ("Relationship_type", "TEXT"),
+            ("Drinking", "TEXT"),
+            ("Smoking", "TEXT"),
+            ("Marijuana", "TEXT"),
+            ("Drugs", "TEXT"),
+            ("Biometrics_Other_Text", "TEXT"),
+            ("prompt_1", "TEXT"),
+            ("answer_1", "TEXT"),
+            ("prompt_2", "TEXT"),
+            ("answer_2", "TEXT"),
+            ("prompt_3", "TEXT"),
+            ("answer_3", "TEXT"),
+            ("Poll_question", "TEXT"),
+            ("Poll_answer_1", "TEXT"),
+            ("Poll_answer_2", "TEXT"),
+            ("Poll_answer_3", "TEXT"),
+            ("Other_text", "TEXT"),
+            ("Media_description", "TEXT"),
+            ("Photo1_desc", "TEXT"),
+            ("Photo2_desc", "TEXT"),
+            ("Photo3_desc", "TEXT"),
+            ("Photo4_desc", "TEXT"),
+            ("Photo5_desc", "TEXT"),
+            ("Photo6_desc", "TEXT"),
+            ("Face_Visibility_Quality", "TEXT"),
+            ("Photo_Authenticity_Editing_Level", "TEXT"),
+            ("Apparent_Body_Fat_Level", "TEXT"),
+            ("Profile_Distinctiveness", "TEXT"),
+            ("Apparent_Build_Category", "TEXT"),
+            ("Apparent_Skin_Tone", "TEXT"),
+            ("Apparent_Ethnic_Features", "TEXT"),
+            ("Hair_Color", "TEXT"),
+            ("Facial_Symmetry_Level", "TEXT"),
+            ("Indicators_of_Fitness_or_Lifestyle", "TEXT"),
+            ("Overall_Visual_Appeal_Vibe", "TEXT"),
+            ("Apparent_Age_Years", "INTEGER"),
+            ("Attire_and_Style_Indicators", "TEXT"),
+            ("Body_Language_and_Expression", "TEXT"),
+            ("Visible_Enhancements_or_Features", "TEXT"),
+            ("Apparent_Chest_Proportions", "TEXT"),
+            ("Apparent_Attractiveness_Tier", "TEXT"),
+            ("Reasoning_for_attractiveness_tier", "TEXT"),
+            ("Facial_Proportion_Balance", "TEXT"),
+            ("Grooming_Effort_Level", "TEXT"),
+            ("Presentation_Red_Flags", "TEXT"),
+            ("Visible_Tattoo_Level", "TEXT"),
+            ("Visible_Piercing_Level", "TEXT"),
+            ("Short_Term_Hookup_Orientation_Signals", "TEXT"),
+            ("home_country_iso", "TEXT"),
+            ("home_country_confidence", "REAL"),
+            ("home_country_modifier", "INTEGER"),
+            ("job_normalized_title", "TEXT"),
+            ("job_est_salary_gbp", "INTEGER"),
+            ("job_band", "TEXT"),
+            ("job_confidence", "REAL"),
+            ("job_band_reason", "TEXT"),
+            ("job_modifier", "INTEGER"),
+            ("university_elite", "INTEGER"),
+            ("matched_university_name", "TEXT"),
+            ("university_modifier", "INTEGER"),
+            ("long_score", "INTEGER"),
+            ("short_score", "INTEGER"),
+            ("score_breakdown", "TEXT"),
+            ("timestamp", "TEXT"),
+            ("opening_messages_json", "TEXT"),
+            ("opening_pick_json", "TEXT"),
+            ("opening_pick_text", "TEXT"),
+            ("verdict", "TEXT"),
+            ("matched", "INTEGER DEFAULT 0"),
+            ("match_time", "TEXT"),
+        ]
+        base_names = {name for name, _ in base_defs}
+        extra_defs = []
+        for name, info in existing_meta.items():
+            if name in base_names:
+                continue
+            col_type = info[2] or "TEXT"
+            not_null = " NOT NULL" if info[3] else ""
+            default_val = f" DEFAULT {info[4]}" if info[4] is not None else ""
+            extra_defs.append((name, f"{col_type}{not_null}{default_val}"))
+
+        defs = base_defs + extra_defs
+        col_defs_sql = ",\n                ".join([f"{name} {ddl}" for name, ddl in defs])
+
+        cur.execute("ALTER TABLE profiles RENAME TO profiles_old;")
+        cur.execute(f"CREATE TABLE profiles ({col_defs_sql});")
+        common_cols = [name for name, _ in defs if name in existing_cols]
+        col_list = ",".join(common_cols)
+        cur.execute(
+            f"INSERT INTO profiles ({col_list}) SELECT {col_list} FROM profiles_old;"
+        )
+        cur.execute("DROP TABLE profiles_old;")
+        cur.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_profiles_unique
+            ON profiles(Name COLLATE NOCASE, Age, Height_cm);
+            """
+        )
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
     finally:
         con.close()
 
@@ -483,6 +628,7 @@ def _flatten_extracted(extracted: Dict[str, Any]) -> Dict[str, Any]:
         "Age": age,
         "Height_cm": height_cm,
         "Location": _val(merged, "Location") or "",
+        "Active_status": _val(merged, "Active Status") or _val(merged, "Active_status") or "",
         "Ethnicity": _val(merged, "Explicit Ethnicity") or _val(merged, "Ethnicity") or "",
         "Children": _val(merged, "Children") or "",
         "Family_plans": _val(merged, "Family plans") or _val(merged, "Family_plans") or "",
@@ -581,7 +727,7 @@ def upsert_profile_flat(
     # Build insert with named parameters
     visual_cols = [col for _, col in VISUAL_TRAIT_FIELDS]
     cols = [
-        "Name","Gender","Sexuality","Age","Height_cm","Location","Ethnicity","Children","Family_plans",
+        "Name","Gender","Sexuality","Age","Height_cm","Location","Active_status","Ethnicity","Children","Family_plans",
         "Covid_vaccine","Pets","Zodiac_Sign","Job_title","University","Religious_Beliefs","Home_town",
         "Politics","Languages_spoken","Dating_Intentions","Relationship_type","Drinking","Smoking",
         "Marijuana","Drugs","Biometrics_Other_Text","prompt_1","answer_1","prompt_2","answer_2","prompt_3","answer_3",

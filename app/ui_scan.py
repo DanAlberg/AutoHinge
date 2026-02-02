@@ -20,7 +20,8 @@ def _normalize_text_basic(text: str) -> str:
 
 def _is_media_content_desc(content_desc: str) -> bool:
     cd = (content_desc or "").lower()
-    return "photo" in cd or "video" in cd or "gif" in cd
+    # Only treat static photos as media; skip video/gif prompts entirely.
+    return "photo" in cd and "video" not in cd and "gif" not in cd
 
 
 def _is_media_node(node: Dict[str, Any]) -> bool:
@@ -131,13 +132,8 @@ def _dump_ui_xml(device, tmp_path: str = "/sdcard/hinge_ui.xml") -> str:
     Uses a single rotating file to avoid cluttering the device storage.
     """
     try:
-        device.shell(f"uiautomator dump {tmp_path}")
-        raw = device.shell(f"cat {tmp_path}")
-        # Best-effort cleanup; ignore failures.
-        try:
-            device.shell(f"rm {tmp_path}")
-        except Exception:
-            pass
+        # Single shell call to reduce adb round-trips; keep best-effort cleanup.
+        raw = device.shell(f"uiautomator dump {tmp_path} && cat {tmp_path}; rm {tmp_path}")
         xml = _extract_xml_root(raw)
         if not xml:
             _log("[UI] Empty/invalid XML dump")
@@ -340,6 +336,7 @@ def _flatten_ui_nodes(root: ET.Element) -> List[Dict[str, Any]]:
             "text": attrs.get("text", "") or "",
             "content_desc": attrs.get("content-desc", "") or "",
             "cls": attrs.get("class", "") or "",
+            "resource_id": attrs.get("resource-id", "") or "",
             "scrollable": attrs.get("scrollable", "") == "true",
             "bounds": bounds,
         }
@@ -449,6 +446,27 @@ def _find_send_like_anyway_bounds(nodes: List[Dict[str, Any]]) -> Optional[Tuple
         if tx == target_norm:
             return _find_enclosing_bounds(nodes, n.get("bounds"))
     return None
+
+
+def _is_loading_screen(nodes: List[Dict[str, Any]]) -> bool:
+    blur_present = any(
+        n.get("resource_id") == "co.hinge.app:id/blur_view" for n in nodes
+    )
+    if not blur_present:
+        return False
+    allowed_texts = {"discover"}
+    for n in nodes:
+        text = (n.get("text") or "").strip()
+        if text and text.lower() not in allowed_texts:
+            return False
+        cd = (n.get("content_desc") or "").strip().lower()
+        if cd.startswith("skip "):
+            return False
+        if cd in {"undo the previous pass rating", "more"}:
+            return False
+        if "photo" in cd or "prompt" in cd or "poll" in cd:
+            return False
+    return True
 
 
 def _clean_name_text(text: str) -> str:
@@ -701,6 +719,16 @@ _BIOMETRIC_ENUM_MULTI = {
 }
 
 
+def _extract_active_status(nodes: List[Dict[str, Any]]) -> Optional[str]:
+    for n in nodes:
+        text = (n.get("text") or "").strip().lower()
+        if text == "active now":
+            return "now"
+        if text == "active today":
+            return "today"
+    return None
+
+
 def _append_biometrics_other(biometrics: Dict[str, Any], extra_text: str) -> bool:
     if not extra_text:
         return False
@@ -918,7 +946,7 @@ def _scan_biometrics_hscroll(
     no_new = 0
     while swipes_done < max_swipes and no_new < 2:
         _hscroll_once(device, h_area, "left")
-        time.sleep(0.4)
+        time.sleep(0.2)
         xml = _dump_ui_xml(device)
         nodes = _parse_ui_nodes(xml)
         updates = _extract_biometrics_from_nodes(nodes, scroll_area)
@@ -1487,7 +1515,7 @@ def _scroll_and_capture(
         distance_px,
         duration_ms=duration_ms or 450,
     )
-    time.sleep(0.5)
+    time.sleep(0.2)
     xml = _dump_ui_xml(device)
     nodes = _parse_ui_nodes(xml)
     current_scroll_area = _find_scroll_area(nodes) or scroll_area
@@ -2040,6 +2068,13 @@ def _scan_profile_single_pass(
                     _log(f"[BIOMETRICS] {k} = {biometrics.get(k)}")
                 else:
                     _log(f"[BIOMETRICS] {k} = {v}")
+        active_status = _extract_active_status(nodes)
+        if active_status:
+            if biometrics.get("Active Status") == "today" and active_status == "now":
+                biometrics["Active Status"] = "now"
+                _log("[BIOMETRICS] Active Status = now")
+            elif _merge_biometrics_value(biometrics, "Active Status", active_status):
+                _log(f"[BIOMETRICS] Active Status = {active_status}")
 
         # Horizontal biometrics scroll (once), stop when no new values appear.
         if not did_hscroll and any(k in biometrics for k in ("Age", "Gender", "Sexuality")):
@@ -2244,5 +2279,3 @@ def _resolve_target_from_ui_map(
                     "option_text": opt.get("text", ""),
                 }
     return {}
-
-
