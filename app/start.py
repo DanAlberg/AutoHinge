@@ -26,6 +26,7 @@ from sqlite_store import (
     update_profile_verdict,
 )
 from ui_scan import (
+    _bounds_visible,
     _bounds_center,
     _bounds_close,
     _clear_crops_folder,
@@ -151,7 +152,7 @@ def _choose_opening_message(
     llm4_result: Dict[str, Any],
     unrestricted: bool,
     timings: Optional[Dict[str, Any]] = None,
-) -> Tuple[Dict[str, Any], bool]:
+) -> Tuple[Dict[str, Any], bool, bool]:
     openers = _extract_openers_list(llm3_result)
     updated = dict(llm4_result or {})
     idx = _default_opener_index(openers, updated)
@@ -163,7 +164,7 @@ def _choose_opening_message(
         updated["main_target_id"] = sel.get("main_target_id", updated.get("main_target_id", ""))
 
     if unrestricted:
-        return updated, True
+        return updated, True, False
 
     while True:
         chosen_text = (updated.get("chosen_text") or "").strip()
@@ -174,18 +175,34 @@ def _choose_opening_message(
         prompt = "Enter y to send, n to skip"
         if openers:
             prompt += ", or options"
-        prompt += ": "
+        prompt += ", or redo, or override: "
         try:
             t0 = time.perf_counter()
             resp = input(prompt).strip().lower()
             if isinstance(timings, dict):
                 timings["input_wait_s"] = timings.get("input_wait_s", 0.0) + (time.perf_counter() - t0)
         except Exception:
-            return updated, False
+            return updated, False, False
         if resp in {"y", "yes"}:
-            return updated, True
+            return updated, True, False
         if resp in {"n", "no", ""}:
-            return updated, False
+            return updated, False, False
+        if resp == "redo":
+            return updated, False, True
+        if resp == "override":
+            try:
+                t0 = time.perf_counter()
+                custom_text = input("Enter custom message (blank to cancel): ").strip()
+                if isinstance(timings, dict):
+                    timings["input_wait_s"] = timings.get("input_wait_s", 0.0) + (time.perf_counter() - t0)
+            except Exception:
+                return updated, False, False
+            if not custom_text:
+                continue
+            updated["chosen_text"] = custom_text
+            updated["chosen_index"] = None
+            updated["rationale"] = "override"
+            continue
         if resp == "options" and openers:
             for i, o in enumerate(openers, start=1):
                 tgt = o.get("main_target_id") or ""
@@ -196,7 +213,7 @@ def _choose_opening_message(
                 if isinstance(timings, dict):
                     timings["input_wait_s"] = timings.get("input_wait_s", 0.0) + (time.perf_counter() - t0)
             except Exception:
-                return updated, False
+                return updated, False, False
             if not pick_raw:
                 continue
             if pick_raw.isdigit():
@@ -288,6 +305,7 @@ def _enter_comment_text(
     chosen_text: str,
     attempts: int = 3,
 ) -> bool:
+    safe_text = "".join(ch if ord(ch) < 128 else " " for ch in (chosen_text or ""))
     last_xml = ""
     for _ in range(attempts):
         comment_bounds = None
@@ -305,7 +323,7 @@ def _enter_comment_text(
             _tap_bounds(device, comment_bounds, width, height)
             time.sleep(0.2)
             from helper_functions import input_text, hide_keyboard
-            input_text(device, chosen_text.strip())
+            input_text(device, safe_text.strip())
             time.sleep(0.2)
             hide_keyboard(device)
             time.sleep(0.2)
@@ -569,34 +587,45 @@ def _run_single_profile(
     target_action = {}
     if decision == "short_pickup":
         llm3_variant = "short"
-        t0 = time.perf_counter()
-        llm3_result = run_llm3_short(extracted)
-        timings["llm3_s"] = round(time.perf_counter() - t0, 2)
     elif decision == "long_pickup":
         llm3_variant = "long"
-        t0 = time.perf_counter()
-        llm3_result = run_llm3_long(extracted)
-        timings["llm3_s"] = round(time.perf_counter() - t0, 2)
     if log_state:
         log_state["llm3_variant"] = llm3_variant
-        log_state["llm3_result"] = llm3_result
         _write_run_log(out_path, log_state)
+    if llm3_variant:
+        while True:
+            t0 = time.perf_counter()
+            if llm3_variant == "short":
+                llm3_result = run_llm3_short(extracted)
+            else:
+                llm3_result = run_llm3_long(extracted)
+            timings["llm3_s"] = round(time.perf_counter() - t0, 2)
+            if log_state:
+                log_state["llm3_result"] = llm3_result
+                _write_run_log(out_path, log_state)
+            if not llm3_result:
+                llm4_result = {}
+                break
+            t0 = time.perf_counter()
+            if llm3_variant == "short":
+                llm4_result = run_llm4_short(llm3_result)
+            else:
+                llm4_result = run_llm4_long(llm3_result)
+            timings["llm4_s"] = round(time.perf_counter() - t0, 2)
+            if log_state:
+                log_state["llm4_result"] = llm4_result
+                _write_run_log(out_path, log_state)
+            llm4_result, send_approved, redo_requested = _choose_opening_message(
+                llm3_result, llm4_result, args.unrestricted, timings
+            )
+            if log_state:
+                log_state["llm4_result"] = llm4_result
+                _write_run_log(out_path, log_state)
+            if redo_requested:
+                print("[SEND] redo requested; regenerating openers")
+                continue
+            break
     if llm3_result:
-        t0 = time.perf_counter()
-        if llm3_variant == "short":
-            llm4_result = run_llm4_short(llm3_result)
-        else:
-            llm4_result = run_llm4_long(llm3_result)
-        timings["llm4_s"] = round(time.perf_counter() - t0, 2)
-        if log_state:
-            log_state["llm4_result"] = llm4_result
-            _write_run_log(out_path, log_state)
-        llm4_result, send_approved = _choose_opening_message(
-            llm3_result, llm4_result, args.unrestricted, timings
-        )
-        if log_state:
-            log_state["llm4_result"] = llm4_result
-            _write_run_log(out_path, log_state)
         if not send_approved:
             print("[SEND] skipped by user; ending run after this profile")
             user_requested_stop = True
@@ -703,6 +732,8 @@ def _run_single_profile(
                             target_info.get("prompt", ""),
                             target_info.get("answer", ""),
                         )
+                    if prompt_bounds and not _bounds_visible(prompt_bounds, cur_scroll_area):
+                        prompt_bounds = None
                     if prompt_bounds:
                         tap_bounds, tap_desc = _find_like_button_near_bounds_screen(
                             cur_nodes, prompt_bounds, "prompt"
@@ -1036,7 +1067,7 @@ def main() -> int:
 
     device_ip = "127.0.0.1"
     max_scrolls = 40
-    scroll_step = 700
+    scroll_step = 900
 
     device, width, height = _init_device(device_ip)
     if not device or not width or not height:

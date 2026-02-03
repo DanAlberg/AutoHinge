@@ -162,6 +162,19 @@ def _bounds_center(bounds: Tuple[int, int, int, int]) -> Tuple[int, int]:
     return int((x1 + x2) / 2), int((y1 + y2) / 2)
 
 
+def _bounds_visible(
+    bounds: Optional[Tuple[int, int, int, int]],
+    scroll_area: Optional[Tuple[int, int, int, int]],
+    min_height: int = 80,
+) -> bool:
+    if not bounds or not scroll_area:
+        return False
+    vis_top = max(bounds[1], scroll_area[1])
+    vis_bottom = min(bounds[3], scroll_area[3])
+    vis_h = vis_bottom - vis_top
+    return vis_h >= min_height
+
+
 def _bounds_area(bounds: Tuple[int, int, int, int]) -> int:
     x1, y1, x2, y2 = bounds
     return max(0, x2 - x1) * max(0, y2 - y1)
@@ -1628,7 +1641,7 @@ def _seek_target_on_screen(
                 target_info.get("prompt", ""),
                 target_info.get("answer", ""),
             )
-            if prompt_bounds:
+            if prompt_bounds and _bounds_visible(prompt_bounds, scroll_area):
                 _log(f"[SEEK] prompt visible at {prompt_bounds}")
                 found["prompt_bounds"] = prompt_bounds
         elif target_type == "poll":
@@ -2039,6 +2052,7 @@ def _scan_profile_single_pass(
     biometrics: Dict[str, Any] = {}
     photo_paths: List[str] = []
     seen_photo_keys: Set[int] = set()
+    seen_photo_hashes: List[int] = []
     last_capture_abs_top: Optional[int] = None
     last_capture_height: Optional[int] = None
     skip_photo_capture_once = False
@@ -2152,28 +2166,44 @@ def _scan_profile_single_pass(
                                 photo_hash = (
                                     _compute_center_ahash_from_file(crop_path) if crop_path else None
                                 )
-                                like_center = _bounds_center(like_abs) if like_abs else None
-                                ui_map["photos"].append(
-                                    {
-                                        "content_desc": "photo",
-                                        "media_type": media_type,
-                                        "abs_bounds": abs_bounds,
-                                        "abs_center_y": int((abs_bounds[1] + abs_bounds[3]) / 2),
-                                        "like_bounds": like_abs,
-                                        "like_desc": like_desc,
-                                        "crop_path": crop_path,
-                                        "hash": photo_hash,
-                                        "abs_top": abs_top,
-                                        "like_center": like_center,
-                                    }
-                                )
-                                seen_photo_keys.add(key)
-                                last_capture_abs_top = abs_top
-                                last_capture_height = vb_h
-                                _log(
-                                    f"[PHOTO] captured abs_top={abs_top} abs_bounds={abs_bounds} "
-                                    f"like_abs={like_abs} like_center={like_center}"
-                                )
+                                duplicate_hash = False
+                                if photo_hash is not None:
+                                    for prev_hash in seen_photo_hashes:
+                                        if _ahash_distance(photo_hash, prev_hash) <= 6:
+                                            duplicate_hash = True
+                                            break
+                                if duplicate_hash:
+                                    _log(f"[PHOTO] skip duplicate hash abs_top={abs_top}")
+                                    if crop_path:
+                                        try:
+                                            os.remove(crop_path)
+                                        except Exception:
+                                            pass
+                                else:
+                                    like_center = _bounds_center(like_abs) if like_abs else None
+                                    ui_map["photos"].append(
+                                        {
+                                            "content_desc": "photo",
+                                            "media_type": media_type,
+                                            "abs_bounds": abs_bounds,
+                                            "abs_center_y": int((abs_bounds[1] + abs_bounds[3]) / 2),
+                                            "like_bounds": like_abs,
+                                            "like_desc": like_desc,
+                                            "crop_path": crop_path,
+                                            "hash": photo_hash,
+                                            "abs_top": abs_top,
+                                            "like_center": like_center,
+                                        }
+                                    )
+                                    seen_photo_keys.add(key)
+                                    if photo_hash is not None:
+                                        seen_photo_hashes.append(photo_hash)
+                                    last_capture_abs_top = abs_top
+                                    last_capture_height = vb_h
+                                    _log(
+                                        f"[PHOTO] captured abs_top={abs_top} abs_bounds={abs_bounds} "
+                                        f"like_abs={like_abs} like_center={like_center}"
+                                    )
         elif skip_photo_capture_once:
             # Ensure we only skip once even if no photo was visible.
             skip_photo_capture_once = False
