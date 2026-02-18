@@ -414,6 +414,28 @@ def update_profile_opening_pick(
             ct = result.get("chosen_text")
             if isinstance(ct, str):
                 chosen_text = ct.strip()
+            if not chosen_text:
+                ranked = result.get("ranked")
+                top_pick = None
+                if isinstance(ranked, list):
+                    for item in ranked:
+                        if not isinstance(item, dict):
+                            continue
+                        try:
+                            if int(item.get("rank")) == 1:
+                                top_pick = item
+                                break
+                        except Exception:
+                            continue
+                    if top_pick is None:
+                        for item in ranked:
+                            if isinstance(item, dict):
+                                top_pick = item
+                                break
+                if isinstance(top_pick, dict):
+                    rt = top_pick.get("text")
+                    if isinstance(rt, str):
+                        chosen_text = rt.strip()
     except Exception:
         chosen_text = ""
     db_path = db_path or get_db_path()

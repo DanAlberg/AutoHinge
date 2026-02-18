@@ -3,7 +3,7 @@ import time
 from typing import Any, Dict
 
 from llm_client import get_default_model, get_llm_client, resolve_model
-from prompts import LLM3_LONG, LLM3_SHORT, LLM4_LONG, LLM4_SHORT
+from prompts import LLM3_LONG, LLM3_SHORT, LLM4_LONG, LLM4_SHORT, LLM5_SAFETY
 from ai_trace import _ai_trace_log, _ai_trace_log_response, _ai_trace_prompt_lines
 from runtime import _log
 
@@ -37,7 +37,7 @@ def run_llm3_long(extracted: Dict[str, Any], model: str | None = None) -> Dict[s
                 error=f"json_parse_error: {e}",
             )
             _log(f"[LLM3] long parse failed: {e}")
-            return {}
+            return {"model_used": resolved_model}
         if not isinstance(parsed, dict):
             _ai_trace_log_response(
                 "llm3_long",
@@ -47,7 +47,8 @@ def run_llm3_long(extracted: Dict[str, Any], model: str | None = None) -> Dict[s
                 duration_ms=dt_ms,
                 error="parsed_not_dict",
             )
-            return {}
+            return {"model_used": resolved_model}
+        parsed["model_used"] = resolved_model
         _ai_trace_log_response(
             "llm3_long",
             resolved_model,
@@ -65,7 +66,7 @@ def run_llm3_long(extracted: Dict[str, Any], model: str | None = None) -> Dict[s
             duration_ms=None,
             error=f"call_error: {e}",
         )
-        return {}
+        return {"model_used": resolved_model}
 
 
 def run_llm3_short(extracted: Dict[str, Any], model: str | None = None) -> Dict[str, Any]:
@@ -98,7 +99,7 @@ def run_llm3_short(extracted: Dict[str, Any], model: str | None = None) -> Dict[
                 error=f"json_parse_error: {e}",
             )
             _log(f"[LLM3] short parse failed: {e}")
-            return {}
+            return {"model_used": resolved_model}
         if not isinstance(parsed, dict):
             _ai_trace_log_response(
                 "llm3_short",
@@ -108,7 +109,8 @@ def run_llm3_short(extracted: Dict[str, Any], model: str | None = None) -> Dict[
                 duration_ms=dt_ms,
                 error="parsed_not_dict",
             )
-            return {}
+            return {"model_used": resolved_model}
+        parsed["model_used"] = resolved_model
         _ai_trace_log_response(
             "llm3_short",
             resolved_model,
@@ -126,7 +128,7 @@ def run_llm3_short(extracted: Dict[str, Any], model: str | None = None) -> Dict[
             duration_ms=None,
             error=f"call_error: {e}",
         )
-        return {}
+        return {"model_used": resolved_model}
 
 
 def _run_llm4_prompt(prompt: str, model: str | None = None) -> Dict[str, Any]:
@@ -158,7 +160,7 @@ def _run_llm4_prompt(prompt: str, model: str | None = None) -> Dict[str, Any]:
                 error=f"json_parse_error: {e}",
             )
             _log(f"[LLM4] parse failed: {e}")
-            return {}
+            return {"model_used": resolved_model}
         try:
             _ai_trace_log_response(
                 "llm4",
@@ -169,7 +171,10 @@ def _run_llm4_prompt(prompt: str, model: str | None = None) -> Dict[str, Any]:
             )
         except Exception:
             pass
-        return parsed if isinstance(parsed, dict) else {}
+        if isinstance(parsed, dict):
+            parsed["model_used"] = resolved_model
+            return parsed
+        return {"model_used": resolved_model}
     except Exception as e:
         _ai_trace_log_response(
             "llm4",
@@ -179,7 +184,7 @@ def _run_llm4_prompt(prompt: str, model: str | None = None) -> Dict[str, Any]:
             duration_ms=None,
             error=f"call_error: {e}",
         )
-        return {}
+        return {"model_used": resolved_model}
 
 
 def run_llm4_long(openers_json: Dict[str, Any], model: str | None = None) -> Dict[str, Any]:
@@ -195,3 +200,50 @@ def run_llm4_short(openers_json: Dict[str, Any], model: str | None = None) -> Di
 def run_llm4(openers_json: Dict[str, Any], model: str | None = None) -> Dict[str, Any]:
     prompt = LLM4_LONG(openers_json)
     return _run_llm4_prompt(prompt, model=model)
+
+
+def run_llm5_safety(
+    extracted: Dict[str, Any],
+    decision: str,
+    chosen_text: str,
+    score_table: str,
+    model: str | None = None
+) -> Dict[str, Any]:
+    prompt = LLM5_SAFETY(extracted, decision, chosen_text, score_table)
+    requested_model = model or get_default_model()
+    resolved_model = resolve_model(requested_model)
+    trace_lines = [
+        f"AI_CALL call_id=llm5_safety model={resolved_model} response_format=json_object"
+    ]
+    trace_lines.extend(_ai_trace_prompt_lines(prompt))
+    _ai_trace_log(trace_lines)
+    try:
+        t0 = time.perf_counter()
+        resp = get_llm_client().chat.completions.create(
+            model=resolved_model,
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        dt_ms = int((time.perf_counter() - t0) * 1000)
+        raw = resp.choices[0].message.content or ""
+        try:
+            parsed = json.loads(raw or "{}")
+        except Exception as e:
+            _ai_trace_log_response("llm5_safety", resolved_model, raw, parsed=None, duration_ms=dt_ms, error=f"json_parse_error: {e}")
+            return {"approved": True, "reason": "json_error_fallback", "model_used": resolved_model}
+        
+        _ai_trace_log_response("llm5_safety", resolved_model, raw, parsed=parsed, duration_ms=dt_ms)
+        if isinstance(parsed, dict):
+            parsed["model_used"] = resolved_model
+            return parsed
+        return {"approved": True, "reason": "format_error_fallback", "model_used": resolved_model}
+    except Exception as e:
+        _ai_trace_log_response(
+            "llm5_safety",
+            resolved_model,
+            raw="",
+            parsed=None,
+            duration_ms=None,
+            error=f"call_error: {e}",
+        )
+        return {"approved": True, "reason": "call_error_fallback", "model_used": resolved_model}

@@ -105,7 +105,9 @@ def run_profile_eval_llm(extracted: Dict[str, Any], model: str | None = None) ->
                 error=f"json_parse_error: {e}",
             )
             _log(f"[LLM2] parse failed: {e}")
-            return _default_profile_eval()
+            d = _default_profile_eval()
+            d["model_used"] = resolved_model
+            return d
         if not isinstance(parsed, dict):
             _ai_trace_log_response(
                 "profile_eval_llm",
@@ -115,8 +117,11 @@ def run_profile_eval_llm(extracted: Dict[str, Any], model: str | None = None) ->
                 duration_ms=dt_ms,
                 error="parsed_not_dict",
             )
-            return _default_profile_eval()
+            d = _default_profile_eval()
+            d["model_used"] = resolved_model
+            return d
         parsed = normalize_dashes(parsed)
+        parsed["model_used"] = resolved_model
         _ai_trace_log_response(
             "profile_eval_llm",
             resolved_model,
@@ -134,7 +139,9 @@ def run_profile_eval_llm(extracted: Dict[str, Any], model: str | None = None) ->
             duration_ms=None,
             error=f"call_error: {e}",
         )
-        return _default_profile_eval()
+        d = _default_profile_eval()
+        d["model_used"] = resolved_model
+        return d
 
 
 def run_llm1_visual(
@@ -172,7 +179,9 @@ def run_llm1_visual(
                 error=f"json_parse_error: {e}",
             )
             _log(f"[LLM1] parse failed: {e}")
-            return {}, payload.get("meta", {})
+            meta = payload.get("meta", {})
+            meta["model_used"] = resolved_model
+            return {}, meta
         if not isinstance(parsed, dict):
             _ai_trace_log_response(
                 "llm1_visual",
@@ -182,7 +191,9 @@ def run_llm1_visual(
                 duration_ms=dt_ms,
                 error="parsed_not_dict",
             )
-            return {}, payload.get("meta", {})
+            meta = payload.get("meta", {})
+            meta["model_used"] = resolved_model
+            return {}, meta
         _ai_trace_log_response(
             "llm1_visual",
             resolved_model,
@@ -190,7 +201,9 @@ def run_llm1_visual(
             parsed=parsed,
             duration_ms=dt_ms,
         )
-        return parsed, payload.get("meta", {})
+        meta = payload.get("meta", {})
+        meta["model_used"] = resolved_model
+        return parsed, meta
     except Exception as e:
         _ai_trace_log_response(
             "llm1_visual",
@@ -201,7 +214,9 @@ def run_llm1_visual(
             error=f"call_error: {e}",
         )
         _log(f"[LLM1] visual call failed: {e}")
-        return {}, payload.get("meta", {})
+        meta = payload.get("meta", {})
+        meta["model_used"] = resolved_model
+        return {}, meta
 
 
 def _build_extracted_profile(
@@ -383,4 +398,3 @@ def _build_extracted_profile(
             "Inferred Visual Traits Summary": visual_out
         },
     }
-

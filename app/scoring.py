@@ -114,6 +114,10 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
         record("Core Biometrics", "Religious Beliefs", religion, +10)
     elif religion_norm == _norm_value("Muslim"):
         record("Core Biometrics", "Religious Beliefs", religion, -1000)
+    elif religion_norm == _norm_value("Buddhist"):
+        record("Core Biometrics", "Religous Beliefs", religion, 0)
+    elif religion_norm == _norm_value("Agnostic"):
+        record("Core Biometrics", "Religious Beliefs", religion, 0)
     elif religion_norm:
         record("Core Biometrics", "Religious Beliefs", religion, -10)
 
@@ -225,14 +229,12 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     attractiveness = visual_val("Apparent Attractiveness Tier")
     attractiveness_norm = _norm_value(attractiveness)
     attractiveness_deltas = {
-        _norm_value("Very unattractive/morbidly obese"): -1000,
-        _norm_value("Low"): -1000,
-        _norm_value("Average"): -20,
-        _norm_value("Above average"): 5,
-        _norm_value("High"): 10,
-        _norm_value("Very attractive"): 20,
-        _norm_value("Extremely attractive"): 30,
-        _norm_value("Supermodel"): 40,
+        _norm_value("Negligible"): -1000,
+        _norm_value("Low / Unattractive"): -1000,
+        _norm_value("Limited / Below Average"): -20,
+        _norm_value("Average / Moderate"): 5,
+        _norm_value("High / Above Average"): 20,
+        _norm_value("Exceptional / Elite"): 40,
     }
     if attractiveness_norm in attractiveness_deltas:
         att_delta = attractiveness_deltas[attractiveness_norm]
@@ -252,7 +254,7 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     if symmetry_norm == _norm_value("Low"):
         record("Visual Analysis", "Facial Symmetry Level", symmetry, -1000)
     elif symmetry_norm == _norm_value("Moderate"):
-        record("Visual Analysis", "Facial Symmetry Level", symmetry, -20)
+        record("Visual Analysis", "Facial Symmetry Level", symmetry, -10)
 
     hair_color = visual_val("Hair Color")
     if _norm_value(hair_color) == _norm_value("Red/ginger"):
@@ -267,7 +269,7 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     if piercing_norm == _norm_value("High"):
         record("Visual Analysis", "Visible Piercing Level", piercing, -1000)
     elif piercing_norm == _norm_value("Moderate"):
-        record("Visual Analysis", "Visible Piercing Level", piercing, -20)
+        record("Visual Analysis", "Visible Piercing Level", piercing, -25)
     elif piercing_norm == _norm_value("None visible"):
         record("Visual Analysis", "Visible Piercing Level", piercing, +5)
 
@@ -276,7 +278,7 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     if build_norm == _norm_value("Obese/high body fat"):
         record("Visual Analysis", "Apparent Build Category", build, -1000)
     elif build_norm == _norm_value("Curvy (softer proportions)"):
-        record("Visual Analysis", "Apparent Build Category", build, -10)
+        record("Visual Analysis", "Apparent Build Category", build, -5)
     elif build_norm == _norm_value("Muscular/built"):
         record("Visual Analysis", "Apparent Build Category", build, +10)
 
@@ -290,7 +292,7 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     ethnic = visual_val("Apparent Ethnic Features")
     ethnic_norm = _norm_value(ethnic)
     if ethnic_norm == _norm_value("Southeast Asian-presenting"):
-        record("Visual Analysis", "Apparent Ethnic Features", ethnic, -20)
+        record("Visual Analysis", "Apparent Ethnic Features", ethnic, -15)
     elif ethnic_norm in {
         _norm_value("Nordic/Scandinavian-presenting"),
         _norm_value("Slavic/Eastern European-presenting"),
@@ -313,8 +315,6 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
             record("Visual Analysis", "Visible Enhancements or Features", item, -10)
         elif item_norm == _norm_value("Very long nails (2cm+)"):
             record("Visual Analysis", "Visible Enhancements or Features", item, -10)
-        elif item_norm == _norm_value("False eyelashes (obvious)"):
-            record("Visual Analysis", "Visible Enhancements or Features", item, -5)
 
     red_flags = _split_csv(visual_val("Presentation Red Flags"))
     for flag in red_flags:
@@ -330,7 +330,7 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     if job_band == _norm_value("T0"):
         record("Profile Eval", "Job Tier", "T0", -20)
     elif job_band == _norm_value("T1"):
-        record("Profile Eval", "Job Tier", "T1", -10)
+        record("Profile Eval", "Job Tier", "T1", -5)
     elif job_band == _norm_value("T3"):
         record("Profile Eval", "Job Tier", "T3", +10)
     elif job_band == _norm_value("T4"):
@@ -619,14 +619,12 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
     attractiveness = visual_val("Apparent Attractiveness Tier")
     attractiveness_norm = _norm_value(attractiveness)
     attractiveness_deltas = {
-        _norm_value("Very unattractive/morbidly obese"): -1000,
-        _norm_value("Low"): -1000,
-        _norm_value("Average"): -20,
-        _norm_value("Above average"): 5,
-        _norm_value("High"): 10,
-        _norm_value("Very attractive"): 20,
-        _norm_value("Extremely attractive"): 30,
-        _norm_value("Supermodel"): 40,
+        _norm_value("Negligible"): -1000,
+        _norm_value("Low / Unattractive"): -1000,
+        _norm_value("Limited / Below Average"): -20,
+        _norm_value("Average / Moderate"): 5,
+        _norm_value("High / Above Average"): 20,
+        _norm_value("Exceptional / Elite"): 40,
     }
     if attractiveness_norm in attractiveness_deltas:
         att_delta = attractiveness_deltas[attractiveness_norm]
@@ -646,7 +644,7 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
     if symmetry_norm == _norm_value("Low"):
         record("Visual Analysis", "Facial Symmetry Level", symmetry, -1000)
     elif symmetry_norm == _norm_value("Moderate"):
-        record("Visual Analysis", "Facial Symmetry Level", symmetry, -20)
+        record("Visual Analysis", "Facial Symmetry Level", symmetry, -10)
 
     hair_color = visual_val("Hair Color")
     hair_norm = _norm_value(hair_color)
@@ -665,7 +663,7 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
     if piercing_norm == _norm_value("High"):
         record("Visual Analysis", "Visible Piercing Level", piercing, -1000)
     elif piercing_norm == _norm_value("Moderate"):
-        record("Visual Analysis", "Visible Piercing Level", piercing, -20)
+        record("Visual Analysis", "Visible Piercing Level", piercing, -25)
     elif piercing_norm == _norm_value("None visible"):
         record("Visual Analysis", "Visible Piercing Level", piercing, +5)
 
@@ -674,7 +672,7 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
     if build_norm == _norm_value("Obese/high body fat"):
         record("Visual Analysis", "Apparent Build Category", build, -1000)
     elif build_norm == _norm_value("Curvy (softer proportions)"):
-        record("Visual Analysis", "Apparent Build Category", build, -10)
+        record("Visual Analysis", "Apparent Build Category", build, -5)
     elif build_norm == _norm_value("Muscular/built"):
         record("Visual Analysis", "Apparent Build Category", build, +10)
 
@@ -701,8 +699,6 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
             record("Visual Analysis", "Visible Enhancements or Features", item, -10)
         elif item_norm == _norm_value("Very long nails (2cm+)"):
             record("Visual Analysis", "Visible Enhancements or Features", item, -10)
-        elif item_norm == _norm_value("False eyelashes (obvious)"):
-            record("Visual Analysis", "Visible Enhancements or Features", item, -5)
 
     red_flags = _split_csv(visual_val("Presentation Red Flags"))
     for flag in red_flags:

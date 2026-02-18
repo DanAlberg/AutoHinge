@@ -1164,6 +1164,32 @@ def _find_primary_photo_bounds(
     return best
 
 
+def _find_primary_video_bounds(
+    nodes: List[Dict[str, Any]],
+    scroll_area: Tuple[int, int, int, int],
+) -> Optional[Tuple[int, int, int, int]]:
+    top, bottom = scroll_area[1], scroll_area[3]
+    best = None
+    best_area = None
+    for n in nodes:
+        cd = (n.get("content_desc") or "").lower()
+        if "video" not in cd and "gif" not in cd:
+            continue
+        b = n.get("bounds")
+        if not b:
+            continue
+        if b[1] >= bottom or b[3] <= top:
+            continue
+        w = b[2] - b[0]
+        h = b[3] - b[1]
+        if w < 200 or h < 200:
+            continue
+        area = w * h
+        if best_area is None or area > best_area:
+            best_area = area
+            best = b
+    return best
+
 def _find_visible_photo_bounds_all(
     nodes: List[Dict[str, Any]],
     scroll_area: Tuple[int, int, int, int],
@@ -1380,6 +1406,15 @@ def _ensure_photo_square(
     vb_w = vb[2] - vb[0]
     vb_h = vb[3] - vb[1]
     is_square = _is_square_bounds(vb)
+    top_clipped = vb[1] <= scroll_area[1] + 3
+    bottom_clipped = vb[3] >= scroll_area[3] - 3
+    aspect = min(vb_w, vb_h) / max(1, max(vb_w, vb_h))
+    if not is_square and aspect < 0.6 and (top_clipped or bottom_clipped):
+        _log(
+            f"[PHOTO] skip banner-like slice size={vb_w}x{vb_h} "
+            f"top_clipped={top_clipped} bottom_clipped={bottom_clipped}"
+        )
+        return nodes, offset, None
     attempts = 0
     while not is_square and attempts < max_attempts:
         top_clipped = vb[1] <= scroll_area[1] + 3
@@ -2057,6 +2092,8 @@ def _scan_profile_single_pass(
     last_capture_height: Optional[int] = None
     skip_photo_capture_once = False
 
+    start_time = time.time()
+
     xml = _dump_ui_xml(device)
     nodes = _parse_ui_nodes(xml)
     scroll_area = _find_scroll_area(nodes)
@@ -2072,8 +2109,17 @@ def _scan_profile_single_pass(
     did_hscroll = False
     no_move = 0
     scrolls = 0
+    stuck_video_banner = 0
+    last_video_bounds: Optional[Tuple[int, int, int, int]] = None
+    high_overlap = 0
 
     while True:
+
+        if time.time() - start_time > 150:
+            _log("[SCROLL] Scan timeout reached (> 120s); returning collected data.")
+            break
+
+
         # Extract biometrics visible on this screen.
         updates = _extract_biometrics_from_nodes(nodes, scroll_area)
         for k, v in updates.items():
@@ -2102,6 +2148,14 @@ def _scan_profile_single_pass(
         # Capture primary photo if present and new.
         photo_bounds = _find_primary_photo_bounds(nodes, scroll_area)
         if photo_bounds:
+            banner_like_initial = False
+            vb_w = photo_bounds[2] - photo_bounds[0]
+            vb_h = photo_bounds[3] - photo_bounds[1]
+            if vb_h < vb_w:
+                top_clipped = photo_bounds[1] <= scroll_area[1] + 3
+                bottom_clipped = photo_bounds[3] >= scroll_area[3] - 3
+                if (top_clipped or bottom_clipped) and (not _is_square_bounds(photo_bounds)):
+                    banner_like_initial = True
             if skip_photo_capture_once:
                 _log("[PHOTO] skip capture immediately after hscroll iteration")
                 skip_photo_capture_once = False
@@ -2204,15 +2258,39 @@ def _scan_profile_single_pass(
                                         f"[PHOTO] captured abs_top={abs_top} abs_bounds={abs_bounds} "
                                         f"like_abs={like_abs} like_center={like_center}"
                                     )
+            banner_like = banner_like_initial
+            if photo_bounds and vb_h < vb_w:
+                top_clipped = photo_bounds[1] <= scroll_area[1] + 3
+                bottom_clipped = photo_bounds[3] >= scroll_area[3] - 3
+                if (top_clipped or bottom_clipped) and (not _is_square_bounds(photo_bounds)):
+                    banner_like = True
+            video_bounds = _find_primary_video_bounds(nodes, scroll_area)
+            if banner_like and video_bounds and _is_square_bounds(video_bounds):
+                if last_video_bounds and _bounds_close(video_bounds, last_video_bounds):
+                    stuck_video_banner += 1
+                else:
+                    stuck_video_banner = 1
+                last_video_bounds = video_bounds
+            else:
+                stuck_video_banner = 0
+                last_video_bounds = None
         elif skip_photo_capture_once:
             # Ensure we only skip once even if no photo was visible.
             skip_photo_capture_once = False
+        else:
+            stuck_video_banner = 0
+            last_video_bounds = None
+
+        if stuck_video_banner >= 2:
+            _log("[SCROLL] repeated video+banner slice; assuming end of profile.")
+            break
 
         # Scroll down for next screen.
         if scrolls >= max_scrolls:
             _log("[SCROLL] max_scrolls reached; stopping.")
             break
         prev_nodes = nodes
+        prev_scroll_area = scroll_area
         nodes, delta = _scroll_and_capture(
             device,
             width,
@@ -2227,6 +2305,19 @@ def _scan_profile_single_pass(
         offset += delta
         ui_map["scroll_history"].append(delta)
         scrolls += 1
+
+        prev_sig = _screen_signature(prev_nodes, prev_scroll_area)
+        curr_sig = _screen_signature(nodes, scroll_area)
+        overlap = 0.0
+        if prev_sig:
+            overlap = len(prev_sig & curr_sig) / max(1, len(prev_sig))
+        if overlap >= 0.95:
+            high_overlap += 1
+        else:
+            high_overlap = 0
+        if high_overlap >= 2:
+            _log("[SCROLL] screen unchanged (high-overlap); assuming bottom reached.")
+            break
 
         if abs(delta) <= 5:
             no_move += 1

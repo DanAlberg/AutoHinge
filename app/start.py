@@ -7,6 +7,10 @@ import json
 import os
 import shutil
 import time
+import re
+import subprocess
+import signal
+import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -14,7 +18,7 @@ import config  # ensure .env is loaded early
 
 from helper_functions import ensure_adb_running, connect_device, get_screen_resolution, open_hinge
 from extraction import run_llm1_visual, run_profile_eval_llm, _build_extracted_profile
-from openers import run_llm3_long, run_llm3_short, run_llm4_long, run_llm4_short
+from openers import run_llm3_long, run_llm3_short, run_llm4_long, run_llm4_short, run_llm5_safety
 from profile_utils import _get_core, _norm_value
 from runtime import _is_run_json_enabled, _log, set_verbose
 from scoring import _classify_preference_flag, _format_score_table, _score_profile_long, _score_profile_short
@@ -56,6 +60,21 @@ from ui_scan import (
 )
 
 
+def _alert_user(message: str) -> None:
+    """
+    Trigger a system alert (beep + popup on Windows) to grab user attention.
+    Safe to run on non-Windows (will just beep).
+    """
+    print("\a\a\a")  # Console beep
+    if os.name == "nt":
+        try:
+            import ctypes
+            # MB_ICONWARNING (0x30) | MB_TOPMOST (0x40000)
+            ctypes.windll.user32.MessageBoxW(0, message, "AutoHinge Safety Alert", 0x00040030)
+        except Exception:
+            pass
+
+
 def _force_gemini_env() -> None:
     os.environ.setdefault("LLM_PROVIDER", "gemini")
     gemini_model = os.getenv("GEMINI_MODEL")
@@ -67,6 +86,48 @@ def _force_gemini_env() -> None:
     os.environ.setdefault("HINGE_CV_DEBUG_MODE", "0")
     os.environ.setdefault("HINGE_TARGET_DEBUG", "1")
     os.environ.setdefault("HINGE_SHOW_EXTRACTION_WARNINGS", "0")
+
+
+# Global args reference for the signal handler to modify state
+GLOBAL_ARGS = None
+
+
+class RetryInteractionException(Exception):
+    """Raised by signal handler to restart the decision/action loop."""
+    pass
+
+
+def _signal_handler(sig, frame):
+    """
+    Intercept Ctrl+C to provide an interactive menu.
+    """
+    # Restore default handler temporarily to allow force-kill if this hangs
+    original_handler = signal.getsignal(signal.SIGINT)
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+    print("\n\n[PAUSED] Execution paused via Ctrl+C.")
+    print("1. Continue (Resume program)")
+    print(f"2. Toggle Unrestricted Mode (Current: {GLOBAL_ARGS.unrestricted if GLOBAL_ARGS else 'Unknown'})")
+    print("3. Undo / Retry (Restart decision & action for this profile)")
+    print("4. Quit (Kill program)")
+    
+    try:
+        choice = input("Select option (1-4): ").strip()
+        if choice == '2':
+            if GLOBAL_ARGS:
+                GLOBAL_ARGS.unrestricted = not GLOBAL_ARGS.unrestricted
+                print(f"[CONFIG] Unrestricted mode set to: {GLOBAL_ARGS.unrestricted}")
+        elif choice == '3':
+            signal.signal(signal.SIGINT, _signal_handler)  # Restore handler before raising
+            raise RetryInteractionException()
+        elif choice == '4':
+            print("[QUIT] Exiting...")
+            sys.exit(0)
+    except (KeyboardInterrupt, EOFError):
+        pass  # Fall through to resume
+    
+    print("[RESUME] Resuming execution...")
+    signal.signal(signal.SIGINT, _signal_handler)
 
 
 def _init_device(device_ip: str):
@@ -129,9 +190,39 @@ def _extract_openers_list(llm3_result: Dict[str, Any]) -> List[Dict[str, Any]]:
     return cleaned
 
 
+def _ranked_top_pick(llm4_result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(llm4_result, dict):
+        return None
+    ranked = llm4_result.get("ranked")
+    if not isinstance(ranked, list):
+        return None
+    items = [r for r in ranked if isinstance(r, dict)]
+    if not items:
+        return None
+    for r in items:
+        try:
+            if int(r.get("rank")) == 1:
+                return r
+        except Exception:
+            continue
+    return items[0]
+
+
 def _default_opener_index(openers: List[Dict[str, Any]], llm4_result: Dict[str, Any]) -> Optional[int]:
     if not openers:
         return None
+    chosen_text = (llm4_result.get("chosen_text") or "").strip() if isinstance(llm4_result, dict) else ""
+    if chosen_text:
+        for i, o in enumerate(openers):
+            if o.get("text") == chosen_text:
+                return i
+    ranked_top = _ranked_top_pick(llm4_result)
+    if ranked_top:
+        ranked_text = (ranked_top.get("text") or "").strip()
+        if ranked_text:
+            for i, o in enumerate(openers):
+                if o.get("text") == ranked_text:
+                    return i
     idx_raw = llm4_result.get("chosen_index") if isinstance(llm4_result, dict) else None
     try:
         idx = int(idx_raw)
@@ -139,11 +230,14 @@ def _default_opener_index(openers: List[Dict[str, Any]], llm4_result: Dict[str, 
             return idx
     except Exception:
         pass
-    chosen_text = (llm4_result.get("chosen_text") or "").strip() if isinstance(llm4_result, dict) else ""
-    if chosen_text:
-        for i, o in enumerate(openers):
-            if o.get("text") == chosen_text:
-                return i
+    if ranked_top:
+        idx_raw = ranked_top.get("index")
+        try:
+            idx = int(idx_raw)
+            if 0 <= idx < len(openers):
+                return idx
+        except Exception:
+            pass
     return 0 if openers else None
 
 
@@ -298,6 +392,19 @@ def _backup_db_if_configured() -> None:
         print(f"[BACKUP] failed: {e}")
 
 
+def _set_keep_awake(enabled: bool, device=None) -> None:
+    val = "true" if enabled else "false"
+    cmd = f"svc power stayon {val}"
+    try:
+        if device is not None:
+            device.shell(cmd)
+        else:
+            subprocess.run(["adb", "shell", "svc", "power", "stayon", val], check=False)
+        print(f"[AWAKE] stayon {val}")
+    except Exception as e:
+        print(f"[AWAKE] failed to set stayon {val}: {e}")
+
+
 def _enter_comment_text(
     device,
     width: int,
@@ -358,6 +465,154 @@ def _write_run_log(path: str, data: Dict[str, Any]) -> None:
         print(f"[LOG] failed to write {path}: {e}")
 
 
+def _safe_name(value: str) -> str:
+    value = (value or "").strip()
+    value = re.sub(r"[^A-Za-z0-9._-]+", "_", value)
+    return value or "unknown"
+
+
+def _collect_prompt_map(extracted: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    content = extracted.get("Profile Content (Free Description)", {}) if isinstance(extracted, dict) else {}
+    prompts: Dict[str, Dict[str, Any]] = {}
+    if isinstance(content, dict):
+        items = content.get("Profile Prompts and Answers") or []
+        if isinstance(items, list):
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                pid = item.get("id")
+                if isinstance(pid, str) and pid:
+                    prompts[pid] = item
+    return prompts
+
+
+def _collect_photo_map(extracted: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    content = extracted.get("Profile Content (Free Description)", {}) if isinstance(extracted, dict) else {}
+    photos: Dict[str, Dict[str, Any]] = {}
+    if isinstance(content, dict):
+        for key, item in content.items():
+            if not isinstance(item, dict):
+                continue
+            pid = item.get("id")
+            if isinstance(pid, str) and pid.startswith("photo_"):
+                photos[pid] = item
+    return photos
+
+
+def _collect_poll(extracted: Dict[str, Any]) -> Dict[str, Any]:
+    content = extracted.get("Profile Content (Free Description)", {}) if isinstance(extracted, dict) else {}
+    poll = content.get("Poll (optional, most profiles will not have this)") if isinstance(content, dict) else {}
+    return poll if isinstance(poll, dict) else {}
+
+
+def _write_sent_message_record(
+    log_state: Dict[str, Any],
+    extracted: Dict[str, Any],
+    target_action: Dict[str, Any],
+    llm4_result: Optional[Dict[str, Any]],
+    out_path: str,
+) -> None:
+    comment_text = (target_action.get("comment_text") or "").strip()
+    if not comment_text:
+        return
+    log_dir = os.path.dirname(out_path) or "logs"
+    temp_dir = os.path.join(log_dir, "temp")
+    images_dir = os.path.join(temp_dir, "images")
+    try:
+        os.makedirs(images_dir, exist_ok=True)
+    except Exception:
+        return
+
+    meta = log_state.get("meta") if isinstance(log_state, dict) else {}
+    ts = meta.get("timestamp") if isinstance(meta, dict) else ""
+    bio = log_state.get("biometrics") if isinstance(log_state, dict) else {}
+    name = ""
+    if isinstance(bio, dict):
+        name = str(bio.get("Name") or "")
+    if not name and isinstance(extracted, dict):
+        core = extracted.get("Core Biometrics (Objective)") or {}
+        if isinstance(core, dict):
+            name = str(core.get("Name") or "")
+
+    target_id = (target_action.get("target_id") or "").strip()
+    target_type = (target_action.get("type") or "").strip()
+    if not target_id and isinstance(llm4_result, dict):
+        target_id = (llm4_result.get("main_target_id") or "").strip()
+    if not target_type and isinstance(llm4_result, dict):
+        target_type = (llm4_result.get("main_target_type") or "").strip()
+    if not target_type and target_id:
+        if target_id.startswith("prompt_"):
+            target_type = "prompt"
+        elif target_id.startswith("photo_"):
+            target_type = "photo"
+        elif target_id.startswith("poll_"):
+            target_type = "poll"
+
+    record: Dict[str, Any] = {
+        "log_file": os.path.basename(out_path),
+        "timestamp": ts,
+        "name": name,
+        "message": comment_text,
+        "target_id": target_id,
+        "target_type": target_type,
+    }
+
+    prompts = _collect_prompt_map(extracted)
+    photos = _collect_photo_map(extracted)
+    poll = _collect_poll(extracted)
+
+    if target_type == "prompt" and target_id in prompts:
+        p = prompts[target_id]
+        record["linked_prompt"] = {
+            "prompt": p.get("prompt", ""),
+            "answer": p.get("answer", ""),
+        }
+    elif target_type == "photo" and target_id in photos:
+        p = photos[target_id]
+        src = p.get("source_file") or ""
+        record["linked_photo"] = {
+            "description": p.get("description", ""),
+            "source_file": src,
+        }
+        src_path = src
+        if src and not os.path.isabs(src_path):
+            src_path = os.path.join(os.path.dirname(__file__), src)
+        if src_path and os.path.isfile(src_path):
+            dest_name = f"{_safe_name(ts)}_{_safe_name(name)}_{_safe_name(target_id)}_{os.path.basename(src_path)}"
+            dest_path = os.path.join(images_dir, dest_name)
+            try:
+                shutil.copy2(src_path, dest_path)
+                record["linked_photo"]["copied_file"] = os.path.relpath(dest_path, log_dir)
+            except Exception:
+                record["linked_photo"]["copied_file"] = ""
+    elif target_type == "poll" and poll:
+        answers = []
+        for a in poll.get("answers") or []:
+            if isinstance(a, dict):
+                answers.append(a.get("text", ""))
+        record["linked_poll"] = {
+            "question": poll.get("question", ""),
+            "answers": answers,
+        }
+
+    out_file = os.path.join(temp_dir, "sent_messages.json")
+    records: List[Dict[str, Any]] = []
+    if os.path.isfile(out_file):
+        try:
+            with open(out_file, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+            if isinstance(existing, list):
+                records = existing
+        except Exception:
+            records = []
+    records.append(record)
+    try:
+        with open(out_file, "w", encoding="utf-8") as f:
+            json.dump(records, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+
 def _run_single_profile(
     device,
     width: int,
@@ -412,6 +667,7 @@ def _run_single_profile(
             "llm3_variant": "",
             "llm3_result": {},
             "llm4_result": {},
+            "llm5_result": {},
             "target_action": {},
         }
         _write_run_log(out_path, log_state)
@@ -542,449 +798,505 @@ def _run_single_profile(
         }
         _write_run_log(out_path, log_state)
 
-    print("\n" + score_table)
+    # --- INTERACTION LOOP (Retry Point) ---
+    while True:
+        try:
+            print("\n" + score_table)
 
-    manual_override = ""
-    try:
-        print(
-            "Gate decision pre-override: {decision} (long_score={long_score}, short_score={short_score}, "
-            "long_delta={long_delta}, short_delta={short_delta})".format(
-                decision=decision,
-                long_score=long_score,
-                short_score=short_score,
-                long_delta=long_score - T_LONG,
-                short_delta=short_score - T_SHORT,
-            )
-        )
-        if not args.unrestricted:
-            t0 = time.perf_counter()
-            override = input("Override decision? (long/short/reject, blank to keep): ").strip().lower()
-            timings["input_wait_s"] = timings.get("input_wait_s", 0.0) + (time.perf_counter() - t0)
-            if override in {"long", "short", "reject"}:
-                manual_override = override
-                decision = {"long": "long_pickup", "short": "short_pickup", "reject": "reject"}[override]
-    except Exception:
-        pass
-    if log_state:
-        log_state["manual_override"] = manual_override
-        log_state["gate_decision"] = decision
-        _write_run_log(out_path, log_state)
-    print(
-        "GATE decision={decision} long_score={long_score} short_score={short_score} "
-        "long_delta={long_delta} short_delta={short_delta} dom_margin={dom_margin}".format(
-            decision=decision,
-            long_score=long_score,
-            short_score=short_score,
-            long_delta=long_score - T_LONG,
-            short_delta=short_score - T_SHORT,
-            dom_margin=DOM_MARGIN,
-        )
-    )
-
-    llm3_variant = ""
-    llm3_result = {}
-    llm4_result = {}
-    target_action = {}
-    if decision == "short_pickup":
-        llm3_variant = "short"
-    elif decision == "long_pickup":
-        llm3_variant = "long"
-    if log_state:
-        log_state["llm3_variant"] = llm3_variant
-        _write_run_log(out_path, log_state)
-    if llm3_variant:
-        while True:
-            t0 = time.perf_counter()
-            if llm3_variant == "short":
-                llm3_result = run_llm3_short(extracted)
-            else:
-                llm3_result = run_llm3_long(extracted)
-            timings["llm3_s"] = round(time.perf_counter() - t0, 2)
-            if log_state:
-                log_state["llm3_result"] = llm3_result
-                _write_run_log(out_path, log_state)
-            if not llm3_result:
-                llm4_result = {}
-                break
-            t0 = time.perf_counter()
-            if llm3_variant == "short":
-                llm4_result = run_llm4_short(llm3_result)
-            else:
-                llm4_result = run_llm4_long(llm3_result)
-            timings["llm4_s"] = round(time.perf_counter() - t0, 2)
-            if log_state:
-                log_state["llm4_result"] = llm4_result
-                _write_run_log(out_path, log_state)
-            llm4_result, send_approved, redo_requested = _choose_opening_message(
-                llm3_result, llm4_result, args.unrestricted, timings
-            )
-            if log_state:
-                log_state["llm4_result"] = llm4_result
-                _write_run_log(out_path, log_state)
-            if redo_requested:
-                print("[SEND] redo requested; regenerating openers")
-                continue
-            break
-    if llm3_result:
-        if not send_approved:
-            print("[SEND] skipped by user; ending run after this profile")
-            user_requested_stop = True
-        target_id = str(llm4_result.get("main_target_id", "") or "").strip()
-        if send_approved and target_id:
-            print(f"[TARGET] LLM4 chose target_id={target_id}")
-            target_info = _resolve_target_from_ui_map(ui_map, target_id)
-            target_action = {"target_id": target_id, **target_info}
-            target_type = target_info.get("type", "")
-            if target_type == "photo":
-                target_hash = target_info.get("photo_hash")
-                target_index = None
-                try:
-                    target_index = int(str(target_id).split("_", 1)[1])
-                except Exception:
-                    target_index = None
-                total_photos = len(ui_map.get("photos", []))
-                if target_hash is None or not scroll_area:
-                    print("[TARGET] missing photo hash or scroll area; skipping tap")
-                elif not target_index:
-                    print("[TARGET] missing photo index; skipping tap")
-                else:
-                    seek_photo = _seek_photo_by_index_from_bottom(
-                        device,
-                        width,
-                        height,
-                        scroll_area,
-                        scan_nodes,
-                        scroll_offset,
-                        int(target_index),
-                        total_photos,
-                        target_hash=int(target_hash),
+            manual_override = ""
+            try:
+                print(
+                    "Gate decision pre-override: {decision} (long_score={long_score}, short_score={short_score}, "
+                    "long_delta={long_delta}, short_delta={short_delta})".format(
+                        decision=decision,
+                        long_score=long_score,
+                        short_score=short_score,
+                        long_delta=long_score - T_LONG,
+                        short_delta=short_score - T_SHORT,
                     )
-                    cur_nodes = seek_photo.get("nodes")
-                    cur_scroll_area = seek_photo.get("scroll_area") or scroll_area
-                    tap_bounds = seek_photo.get("tap_bounds")
-                    tap_desc = seek_photo.get("tap_desc", "Like photo")
-                    if not tap_bounds:
-                        print("[TARGET] reverse seek failed; falling back to top-down scan")
-                        seek_photo = _seek_photo_by_index(
+                )
+                if not args.unrestricted:
+                    t0 = time.perf_counter()
+                    override = input("Override decision? (long/short/reject, blank to keep): ").strip().lower()
+                    timings["input_wait_s"] = timings.get("input_wait_s", 0.0) + (time.perf_counter() - t0)
+                    if override in {"long", "short", "reject"}:
+                        manual_override = override
+                        decision = {"long": "long_pickup", "short": "short_pickup", "reject": "reject"}[override]
+            except Exception:
+                pass
+            if log_state:
+                log_state["manual_override"] = manual_override
+                log_state["gate_decision"] = decision
+                _write_run_log(out_path, log_state)
+            print(
+                "GATE decision={decision} long_score={long_score} short_score={short_score} "
+                "long_delta={long_delta} short_delta={short_delta} dom_margin={dom_margin}".format(
+                    decision=decision,
+                    long_score=long_score,
+                    short_score=short_score,
+                    long_delta=long_score - T_LONG,
+                    short_delta=short_score - T_SHORT,
+                    dom_margin=DOM_MARGIN,
+                )
+            )
+
+            llm3_variant = ""
+            llm3_result = {}
+            llm4_result = {}
+            target_action = {}
+            if decision == "short_pickup":
+                llm3_variant = "short"
+            elif decision == "long_pickup":
+                llm3_variant = "long"
+            if log_state:
+                log_state["llm3_variant"] = llm3_variant
+                _write_run_log(out_path, log_state)
+            if llm3_variant:
+                while True:
+                    t0 = time.perf_counter()
+                    if llm3_variant == "short":
+                        llm3_result = run_llm3_short(extracted)
+                    else:
+                        llm3_result = run_llm3_long(extracted)
+                    timings["llm3_s"] = round(time.perf_counter() - t0, 2)
+                    if log_state:
+                        log_state["llm3_result"] = llm3_result
+                        _write_run_log(out_path, log_state)
+                    if not llm3_result:
+                        llm4_result = {}
+                        break
+                    t0 = time.perf_counter()
+                    if llm3_variant == "short":
+                        llm4_result = run_llm4_short(llm3_result)
+                    else:
+                        llm4_result = run_llm4_long(llm3_result)
+                    timings["llm4_s"] = round(time.perf_counter() - t0, 2)
+                    if log_state:
+                        log_state["llm4_result"] = llm4_result
+                        _write_run_log(out_path, log_state)
+                    llm4_result, send_approved, redo_requested = _choose_opening_message(
+                        llm3_result, llm4_result, args.unrestricted, timings
+                    )
+                    if log_state:
+                        log_state["llm4_result"] = llm4_result
+                        _write_run_log(out_path, log_state)
+                    
+                    # LLM5 Safety Check (Unrestricted Mode)
+                    if send_approved and args.unrestricted:
+                        print("[SAFETY] Running LLM5 safety check on message...")
+                        chosen_text = (llm4_result.get("chosen_text") or "").strip()
+                        safety_res = run_llm5_safety(extracted, decision, chosen_text, score_table)
+                        if log_state:
+                            log_state["llm5_result"] = safety_res
+                            _write_run_log(out_path, log_state)
+                        if not safety_res.get("approved"):
+                            reason = safety_res.get("reason", "Unknown reason")
+                            print(f"[SAFETY] 🛑 INTERVENTION NEEDED: {reason}")
+                            _alert_user(f"Safety Intervention Needed:\n\n{reason}")
+                            # Downgrade to manual mode for this interaction
+                            llm4_result, send_approved, redo_requested = _choose_opening_message(
+                                llm3_result, llm4_result, unrestricted=False, timings=timings
+                            )
+                        else:
+                            print("[SAFETY] ✅ Approved")
+
+                    if redo_requested:
+                        print("[SEND] redo requested; regenerating openers")
+                        continue
+                    break
+            if llm3_result:
+                if not send_approved:
+                    print("[SEND] skipped by user; ending run after this profile")
+                    user_requested_stop = True
+                target_id = str(llm4_result.get("main_target_id", "") or "").strip()
+                if send_approved and target_id:
+                    print(f"[TARGET] LLM4 chose target_id={target_id}")
+                    target_info = _resolve_target_from_ui_map(ui_map, target_id)
+                    target_action = {"target_id": target_id, **target_info}
+                    target_type = target_info.get("type", "")
+                    if target_type == "photo":
+                        target_hash = target_info.get("photo_hash")
+                        target_index = None
+                        try:
+                            target_index = int(str(target_id).split("_", 1)[1])
+                        except Exception:
+                            target_index = None
+                        total_photos = len(ui_map.get("photos", []))
+                        if target_hash is None or not scroll_area:
+                            print("[TARGET] missing photo hash or scroll area; skipping tap")
+                        elif not target_index:
+                            print("[TARGET] missing photo index; skipping tap")
+                        else:
+                            seek_photo = _seek_photo_by_index_from_bottom(
+                                device,
+                                width,
+                                height,
+                                scroll_area,
+                                scan_nodes,
+                                scroll_offset,
+                                int(target_index),
+                                total_photos,
+                                target_hash=int(target_hash),
+                            )
+                            cur_nodes = seek_photo.get("nodes")
+                            cur_scroll_area = seek_photo.get("scroll_area") or scroll_area
+                            tap_bounds = seek_photo.get("tap_bounds")
+                            tap_desc = seek_photo.get("tap_desc", "Like photo")
+                            if not tap_bounds:
+                                print("[TARGET] reverse seek failed; falling back to top-down scan")
+                                seek_photo = _seek_photo_by_index(
+                                    device,
+                                    width,
+                                    height,
+                                    scroll_area,
+                                    int(target_index),
+                                    target_hash=int(target_hash),
+                                )
+                                cur_nodes = seek_photo.get("nodes")
+                                cur_scroll_area = seek_photo.get("scroll_area") or scroll_area
+                                tap_bounds = seek_photo.get("tap_bounds")
+                                tap_desc = seek_photo.get("tap_desc", "Like photo")
+                            if tap_bounds:
+                                print(f"[TARGET] photo tap bounds={tap_bounds} desc='{tap_desc}'")
+                                try:
+                                    tap_x, tap_y = _tap_bounds(device, tap_bounds, width, height)
+                                    print(f"[TARGET] tap issued at ({tap_x}, {tap_y})")
+                                except Exception as e:
+                                    print(f"[TARGET] tap failed: {e}")
+                                    tap_x, tap_y = None, None
+                                if tap_x is not None:
+                                    target_action["tap_coords"] = [tap_x, tap_y]
+                                    target_action["tap_like"] = True
+                                time.sleep(0.35)
+                                post_xml = _dump_ui_xml(device)
+                                post_nodes = _parse_ui_nodes(post_xml)
+                                post_bounds, _ = _find_like_button_near_expected(
+                                    post_nodes, cur_scroll_area, "photo", tap_y
+                                )
+                                if _bounds_close(post_bounds, tap_bounds):
+                                    print("[TARGET] like button still present near tap (not confirmed)")
+                                else:
+                                    print("[TARGET] like button not found near tap (likely tapped)")
+                            else:
+                                print("[TARGET] photo not found on-screen; skipping tap")
+                    elif target_info.get("abs_bounds") and scroll_area:
+                        target_bounds = target_info["abs_bounds"]
+                        focus_bounds = target_bounds
+                        if target_type == "photo" and target_info.get("photo_bounds"):
+                            focus_bounds = target_info.get("photo_bounds")
+                        if target_type == "prompt" and target_info.get("prompt_bounds"):
+                            focus_bounds = target_info.get("prompt_bounds")
+                        desired_offset = _compute_desired_offset(focus_bounds, scroll_area)
+                        seek = _seek_target_on_screen(
                             device,
                             width,
                             height,
                             scroll_area,
-                            int(target_index),
-                            target_hash=int(target_hash),
-                        )
-                        cur_nodes = seek_photo.get("nodes")
-                        cur_scroll_area = seek_photo.get("scroll_area") or scroll_area
-                        tap_bounds = seek_photo.get("tap_bounds")
-                        tap_desc = seek_photo.get("tap_desc", "Like photo")
-                    if tap_bounds:
-                        print(f"[TARGET] photo tap bounds={tap_bounds} desc='{tap_desc}'")
-                        try:
-                            tap_x, tap_y = _tap_bounds(device, tap_bounds, width, height)
-                            print(f"[TARGET] tap issued at ({tap_x}, {tap_y})")
-                        except Exception as e:
-                            print(f"[TARGET] tap failed: {e}")
-                            tap_x, tap_y = None, None
-                        if tap_x is not None:
-                            target_action["tap_coords"] = [tap_x, tap_y]
-                            target_action["tap_like"] = True
-                        time.sleep(0.35)
-                        post_xml = _dump_ui_xml(device)
-                        post_nodes = _parse_ui_nodes(post_xml)
-                        post_bounds, _ = _find_like_button_near_expected(
-                            post_nodes, cur_scroll_area, "photo", tap_y
-                        )
-                        if _bounds_close(post_bounds, tap_bounds):
-                            print("[TARGET] like button still present near tap (not confirmed)")
-                        else:
-                            print("[TARGET] like button not found near tap (likely tapped)")
-                    else:
-                        print("[TARGET] photo not found on-screen; skipping tap")
-            elif target_info.get("abs_bounds") and scroll_area:
-                target_bounds = target_info["abs_bounds"]
-                focus_bounds = target_bounds
-                if target_type == "photo" and target_info.get("photo_bounds"):
-                    focus_bounds = target_info.get("photo_bounds")
-                if target_type == "prompt" and target_info.get("prompt_bounds"):
-                    focus_bounds = target_info.get("prompt_bounds")
-                desired_offset = _compute_desired_offset(focus_bounds, scroll_area)
-                seek = _seek_target_on_screen(
-                    device,
-                    width,
-                    height,
-                    scroll_area,
-                    scroll_offset,
-                    target_type,
-                    target_info,
-                    desired_offset,
-                )
-                scroll_offset = seek.get("scroll_offset", scroll_offset)
-                cur_nodes = seek.get("nodes") or _parse_ui_nodes(_dump_ui_xml(device))
-                cur_scroll_area = seek.get("scroll_area") or _find_scroll_area(cur_nodes) or scroll_area
-                expected_screen_y = int((target_bounds[1] + target_bounds[3]) / 2 - scroll_offset)
-                tap_bounds = None
-                tap_desc = ""
-                if target_type == "prompt":
-                    prompt_bounds = seek.get("prompt_bounds")
-                    if not prompt_bounds:
-                        prompt_bounds = _find_prompt_bounds_by_text(
-                            cur_nodes,
-                            target_info.get("prompt", ""),
-                            target_info.get("answer", ""),
-                        )
-                    if prompt_bounds and not _bounds_visible(prompt_bounds, cur_scroll_area):
-                        prompt_bounds = None
-                    if prompt_bounds:
-                        tap_bounds, tap_desc = _find_like_button_near_bounds_screen(
-                            cur_nodes, prompt_bounds, "prompt"
-                        )
-                        print(f"[TARGET] prompt found on-screen at {prompt_bounds}")
-                    else:
-                        print("[TARGET] prompt not found on-screen; falling back to expected Y")
-                        tap_bounds, tap_desc = _find_like_button_near_expected(
-                            cur_nodes, cur_scroll_area, "prompt", expected_screen_y
-                        )
-                elif target_type == "poll":
-                    option_bounds = seek.get("poll_bounds")
-                    if not option_bounds:
-                        option_bounds = _find_poll_option_bounds_by_text(
-                            cur_nodes, target_info.get("option_text", "")
-                        )
-                    if option_bounds:
-                        tap_bounds = option_bounds
-                        tap_desc = "poll_option"
-                        print(f"[TARGET] poll option found on-screen at {option_bounds}")
-                    else:
-                        print("[TARGET] poll option not found on-screen; skipping tap")
-                elif target_type == "photo":
-                    target_hash = target_info.get("photo_hash")
-                    target_photo_bounds = target_info.get("photo_bounds")
-                    target_abs_center_y = None
-                    if target_photo_bounds:
-                        target_abs_center_y = int((target_photo_bounds[1] + target_photo_bounds[3]) / 2)
-                        expected_screen_y = int(target_abs_center_y - scroll_offset)
-
-                    photo_bounds = seek.get("photo_bounds")
-                    if not photo_bounds and target_abs_center_y is not None:
-                        photo_bounds = _find_visible_photo_bounds(
-                            cur_nodes, cur_scroll_area, expected_screen_y
-                        )
-                    if photo_bounds:
-                        cur_nodes, scroll_offset, photo_bounds = _ensure_photo_square(
-                            device,
-                            width,
-                            height,
-                            cur_scroll_area,
-                            cur_nodes,
                             scroll_offset,
-                            photo_bounds,
-                            target_abs_center_y=target_abs_center_y,
+                            target_type,
+                            target_info,
+                            desired_offset,
                         )
-                        cur_scroll_area = _find_scroll_area(cur_nodes) or cur_scroll_area
-                        if target_abs_center_y is not None:
-                            expected_screen_y = int(target_abs_center_y - scroll_offset)
+                        scroll_offset = seek.get("scroll_offset", scroll_offset)
+                        cur_nodes = seek.get("nodes") or _parse_ui_nodes(_dump_ui_xml(device))
+                        cur_scroll_area = seek.get("scroll_area") or _find_scroll_area(cur_nodes) or scroll_area
+                        expected_screen_y = int((target_bounds[1] + target_bounds[3]) / 2 - scroll_offset)
+                        tap_bounds = None
+                        tap_desc = ""
+                        if target_type == "prompt":
+                            prompt_bounds = seek.get("prompt_bounds")
+                            if not prompt_bounds:
+                                prompt_bounds = _find_prompt_bounds_by_text(
+                                    cur_nodes,
+                                    target_info.get("prompt", ""),
+                                    target_info.get("answer", ""),
+                                )
+                            if prompt_bounds and not _bounds_visible(prompt_bounds, cur_scroll_area):
+                                prompt_bounds = None
+                            if prompt_bounds:
+                                tap_bounds, tap_desc = _find_like_button_near_bounds_screen(
+                                    cur_nodes, prompt_bounds, "prompt"
+                                )
+                                print(f"[TARGET] prompt found on-screen at {prompt_bounds}")
+                            else:
+                                print("[TARGET] prompt not found on-screen; falling back to expected Y")
+                                tap_bounds, tap_desc = _find_like_button_near_expected(
+                                    cur_nodes, cur_scroll_area, "prompt", expected_screen_y
+                                )
+                        elif target_type == "poll":
+                            option_bounds = seek.get("poll_bounds")
+                            if not option_bounds:
+                                option_bounds = _find_poll_option_bounds_by_text(
+                                    cur_nodes, target_info.get("option_text", "")
+                                )
+                            if option_bounds:
+                                tap_bounds = option_bounds
+                                tap_desc = "poll_option"
+                                print(f"[TARGET] poll option found on-screen at {option_bounds}")
+                            else:
+                                print("[TARGET] poll option not found on-screen; skipping tap")
+                        elif target_type == "photo":
+                            target_hash = target_info.get("photo_hash")
+                            target_photo_bounds = target_info.get("photo_bounds")
+                            target_abs_center_y = None
+                            if target_photo_bounds:
+                                target_abs_center_y = int((target_photo_bounds[1] + target_photo_bounds[3]) / 2)
+                                expected_screen_y = int(target_abs_center_y - scroll_offset)
 
-                    if target_hash is None:
-                        print("[TARGET] missing photo hash; skipping hash match")
-                    match_bounds = seek.get("photo_match_bounds")
-                    dist = None
-                    if target_hash is not None and not match_bounds:
-                        match_bounds, dist = _match_photo_bounds_by_hash(
-                            device,
-                            width,
-                            height,
-                            cur_nodes,
-                            cur_scroll_area,
-                            int(target_hash),
-                            expected_screen_y=expected_screen_y,
-                            max_dist=18,
-                            square_only=True,
-                        )
-                        if match_bounds:
-                            tap_bounds, tap_desc = _find_like_button_in_photo(
-                                cur_nodes, match_bounds
-                            )
-                            print(
-                                f"[TARGET] photo hash matched bounds={match_bounds} dist={dist}"
-                            )
+                            photo_bounds = seek.get("photo_bounds")
+                            if not photo_bounds and target_abs_center_y is not None:
+                                photo_bounds = _find_visible_photo_bounds(
+                                    cur_nodes, cur_scroll_area, expected_screen_y
+                                )
+                            if photo_bounds:
+                                cur_nodes, scroll_offset, photo_bounds = _ensure_photo_square(
+                                    device,
+                                    width,
+                                    height,
+                                    cur_scroll_area,
+                                    cur_nodes,
+                                    scroll_offset,
+                                    photo_bounds,
+                                    target_abs_center_y=target_abs_center_y,
+                                )
+                                cur_scroll_area = _find_scroll_area(cur_nodes) or cur_scroll_area
+                                if target_abs_center_y is not None:
+                                    expected_screen_y = int(target_abs_center_y - scroll_offset)
 
-                    if not tap_bounds and photo_bounds:
-                        dy = None
-                        if expected_screen_y is not None:
-                            dy = abs(_bounds_center(photo_bounds)[1] - expected_screen_y)
-                        if _is_square_bounds(photo_bounds) and (dy is None or dy <= 220):
-                            tap_bounds, tap_desc = _find_like_button_in_photo(
-                                cur_nodes, photo_bounds
-                            )
-                            print(f"[TARGET] using closest square photo by y dist={dy}")
-                    if not tap_bounds:
-                        print("[TARGET] photo not found on-screen; skipping tap")
-                else:
-                    tap_bounds, tap_desc = _find_like_button_near_expected(
-                        cur_nodes, cur_scroll_area, target_type, expected_screen_y
-                    )
-                if not tap_bounds:
-                    if target_type in {"photo", "poll"}:
-                        print(f"[TARGET] no bounds resolved for {target_type}; skipping tap")
-                    else:
-                        tap_bounds = (
-                            target_bounds[0],
-                            target_bounds[1] - scroll_offset,
-                            target_bounds[2],
-                            target_bounds[3] - scroll_offset,
-                        )
-                if tap_bounds:
-                    print(f"[TARGET] tap bounds={tap_bounds} desc='{tap_desc}' expected_y={expected_screen_y}")
-                    try:
-                        tap_x, tap_y = _tap_bounds(device, tap_bounds, width, height)
-                        print(f"[TARGET] tap issued at ({tap_x}, {tap_y})")
-                    except Exception as e:
-                        print(f"[TARGET] tap failed: {e}")
-                        tap_x, tap_y = None, None
-                    if tap_x is not None:
-                        target_action["tap_coords"] = [tap_x, tap_y]
-                        target_action["tap_like"] = True
-                    if target_type != "poll":
-                        time.sleep(0.35)
-                        post_xml = _dump_ui_xml(device)
-                        post_nodes = _parse_ui_nodes(post_xml)
-                        post_bounds, _ = _find_like_button_near_expected(
-                            post_nodes, cur_scroll_area, target_type, tap_y
-                        )
-                        if _bounds_close(post_bounds, tap_bounds):
-                            print("[TARGET] like button still present near tap (not confirmed)")
+                            if target_hash is None:
+                                print("[TARGET] missing photo hash; skipping hash match")
+                            match_bounds = seek.get("photo_match_bounds")
+                            dist = None
+                            if target_hash is not None and not match_bounds:
+                                match_bounds, dist = _match_photo_bounds_by_hash(
+                                    device,
+                                    width,
+                                    height,
+                                    cur_nodes,
+                                    cur_scroll_area,
+                                    int(target_hash),
+                                    expected_screen_y=expected_screen_y,
+                                    max_dist=18,
+                                    square_only=True,
+                                )
+                                if match_bounds:
+                                    tap_bounds, tap_desc = _find_like_button_in_photo(
+                                        cur_nodes, match_bounds
+                                    )
+                                    print(
+                                        f"[TARGET] photo hash matched bounds={match_bounds} dist={dist}"
+                                    )
+
+                            if not tap_bounds and photo_bounds:
+                                dy = None
+                                if expected_screen_y is not None:
+                                    dy = abs(_bounds_center(photo_bounds)[1] - expected_screen_y)
+                                if _is_square_bounds(photo_bounds) and (dy is None or dy <= 220):
+                                    tap_bounds, tap_desc = _find_like_button_in_photo(
+                                        cur_nodes, photo_bounds
+                                    )
+                                    print(f"[TARGET] using closest square photo by y dist={dy}")
+                            if not tap_bounds:
+                                print("[TARGET] photo not found on-screen; skipping tap")
                         else:
-                            print("[TARGET] like button not found near tap (likely tapped)")
+                            tap_bounds, tap_desc = _find_like_button_near_expected(
+                                cur_nodes, cur_scroll_area, target_type, expected_screen_y
+                            )
+                        if not tap_bounds:
+                            if target_type in {"photo", "poll"}:
+                                print(f"[TARGET] no bounds resolved for {target_type}; skipping tap")
+                            else:
+                                tap_bounds = (
+                                    target_bounds[0],
+                                    target_bounds[1] - scroll_offset,
+                                    target_bounds[2],
+                                    target_bounds[3] - scroll_offset,
+                                )
+                        if tap_bounds:
+                            print(f"[TARGET] tap bounds={tap_bounds} desc='{tap_desc}' expected_y={expected_screen_y}")
+                            try:
+                                tap_x, tap_y = _tap_bounds(device, tap_bounds, width, height)
+                                print(f"[TARGET] tap issued at ({tap_x}, {tap_y})")
+                            except Exception as e:
+                                print(f"[TARGET] tap failed: {e}")
+                                tap_x, tap_y = None, None
+                            if tap_x is not None:
+                                target_action["tap_coords"] = [tap_x, tap_y]
+                                target_action["tap_like"] = True
+                            if target_type != "poll":
+                                time.sleep(0.35)
+                                post_xml = _dump_ui_xml(device)
+                                post_nodes = _parse_ui_nodes(post_xml)
+                                post_bounds, _ = _find_like_button_near_expected(
+                                    post_nodes, cur_scroll_area, target_type, tap_y
+                                )
+                                if _bounds_close(post_bounds, tap_bounds):
+                                    print("[TARGET] like button still present near tap (not confirmed)")
+                                else:
+                                    print("[TARGET] like button not found near tap (likely tapped)")
+                        else:
+                            print("[TARGET] no tap bounds resolved; skipping tap")
+                    else:
+                        print("[TARGET] missing bounds; skipping tap")
+
+            if decision == "reject":
+                force_manual_reject = False
+                if args.unrestricted:
+                    print("[SAFETY] Running LLM5 safety check on rejection...")
+                    safety_res = run_llm5_safety(extracted, decision, "", score_table)
+                    if log_state:
+                        log_state["llm5_result"] = safety_res
+                        _write_run_log(out_path, log_state)
+                    if not safety_res.get("approved"):
+                        reason = safety_res.get("reason", "Unknown reason")
+                        print(f"[SAFETY] 🛑 INTERVENTION NEEDED (Unfair Rejection?): {reason}")
+                        _alert_user(f"Safety Intervention Needed (Rejection):\n\n{reason}")
+                        force_manual_reject = True
+                    else:
+                        print("[SAFETY] ✅ Rejection Approved")
+
+                post_xml = _dump_ui_xml(device)
+                post_nodes = _parse_ui_nodes(post_xml)
+                dislike_bounds = _find_dislike_bounds(post_nodes)
+                if dislike_bounds:
+                    use_unrestricted = args.unrestricted and not force_manual_reject
+                    if _confirm_action("dislike", use_unrestricted, timings):
+                        try:
+                            tap_x, tap_y = _tap_bounds(device, dislike_bounds, width, height)
+                            target_action = {"action": "dislike", "tap_coords": [tap_x, tap_y]}
+                            irreversible_action_taken = True
+                            if not _wait_for_loading_to_clear(device, context="post-dislike"):
+                                loading_stuck = True
+                        except Exception as e:
+                            print(f"[DISLIKE] tap failed: {e}")
+                    else:
+                        print("[DISLIKE] skipped by user")
                 else:
-                    print("[TARGET] no tap bounds resolved; skipping tap")
-            else:
-                print("[TARGET] missing bounds; skipping tap")
+                    print("[DISLIKE] button not found")
 
-    if decision == "reject":
-        post_xml = _dump_ui_xml(device)
-        post_nodes = _parse_ui_nodes(post_xml)
-        dislike_bounds = _find_dislike_bounds(post_nodes)
-        if dislike_bounds:
-            if _confirm_action("dislike", args.unrestricted, timings):
-                try:
-                    tap_x, tap_y = _tap_bounds(device, dislike_bounds, width, height)
-                    target_action = {"action": "dislike", "tap_coords": [tap_x, tap_y]}
-                    irreversible_action_taken = True
-                    if not _wait_for_loading_to_clear(device, context="post-dislike"):
-                        loading_stuck = True
-                except Exception as e:
-                    print(f"[DISLIKE] tap failed: {e}")
-            else:
-                print("[DISLIKE] skipped by user")
-        else:
-            print("[DISLIKE] button not found")
-
-    if log_state:
-        log_state["target_action"] = target_action
-        _write_run_log(out_path, log_state)
-
-    _backup_db_if_configured()
-
-    if decision in {"long_pickup", "short_pickup"}:
-        if not send_approved:
-            user_requested_stop = True
             if log_state:
                 log_state["target_action"] = target_action
                 _write_run_log(out_path, log_state)
-            if loading_stuck:
-                return 3
-            return 2
-        if not isinstance(llm4_result, dict):
-            raise RuntimeError("LLM4 missing result; cannot send comment.")
-        chosen_text = llm4_result.get("chosen_text")
-        if not isinstance(chosen_text, str) or not chosen_text.strip():
-            raise RuntimeError("LLM4 missing chosen_text; cannot send comment.")
 
-        if not _enter_comment_text(device, width, height, chosen_text, attempts=3):
-            raise RuntimeError("Failed to enter comment text.")
+            _backup_db_if_configured()
 
-        time.sleep(0.2)
-        send_bounds = None
-        for attempt in range(6):
-            post_xml = _dump_ui_xml(device)
-            post_nodes = _parse_ui_nodes(post_xml)
-            send_bounds = _find_send_priority_like_bounds(post_nodes)
-            if send_bounds:
-                break
-            _log(f"[SEND] priority button not found (attempt {attempt + 1}/6)")
-            time.sleep(0.35)
+            if decision in {"long_pickup", "short_pickup"}:
+                if not send_approved:
+                    user_requested_stop = True
+                    if log_state:
+                        log_state["target_action"] = target_action
+                        _write_run_log(out_path, log_state)
+                    if loading_stuck:
+                        return 3
+                    return 2
+                if not isinstance(llm4_result, dict):
+                    raise RuntimeError("LLM4 missing result; cannot send comment.")
+                chosen_text = llm4_result.get("chosen_text")
+                if not isinstance(chosen_text, str) or not chosen_text.strip():
+                    raise RuntimeError("LLM4 missing chosen_text; cannot send comment.")
 
-        if not send_bounds:
-            try:
-                os.makedirs("logs", exist_ok=True)
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                xml_path = os.path.join("logs", f"send_priority_missing_{ts}.xml")
-                with open(xml_path, "w", encoding="utf-8") as f:
-                    f.write(post_xml)
-                _log(f"[SEND] wrote XML snapshot to {xml_path}")
-            except Exception:
-                pass
-            # Recovery: re-focus the comment field, then retry.
-            try:
-                if _enter_comment_text(device, width, height, chosen_text, attempts=2):
-                    time.sleep(0.2)
-                    for attempt in range(4):
-                        post_xml = _dump_ui_xml(device)
-                        post_nodes = _parse_ui_nodes(post_xml)
-                        send_bounds = _find_send_priority_like_bounds(post_nodes)
-                        if send_bounds:
-                            break
-                        _log(f"[SEND] recovery attempt {attempt + 1}/4 failed")
-                        time.sleep(0.35)
-            except Exception as e:
-                _log(f"[SEND] recovery failed: {e}")
+                if not _enter_comment_text(device, width, height, chosen_text, attempts=3):
+                    raise RuntimeError("Failed to enter comment text.")
 
-        if not send_bounds:
-            raise RuntimeError("Send priority like button not found.")
+                time.sleep(0.2)
+                send_bounds = None
+                for attempt in range(6):
+                    post_xml = _dump_ui_xml(device)
+                    post_nodes = _parse_ui_nodes(post_xml)
+                    send_bounds = _find_send_priority_like_bounds(post_nodes)
+                    if send_bounds:
+                        break
+                    _log(f"[SEND] priority button not found (attempt {attempt + 1}/6)")
+                    time.sleep(0.35)
 
-        if send_approved:
-            try:
-                tap_x, tap_y = _tap_bounds(device, send_bounds, width, height)
-                target_action["comment_text"] = chosen_text.strip()
-                target_action["send_priority_coords"] = [tap_x, tap_y]
-                _handle_send_like_anyway(device, width, height)
-                irreversible_action_taken = True
-                if not _wait_for_loading_to_clear(device, context="post-send"):
-                    loading_stuck = True
-            except Exception as e:
-                raise RuntimeError(f"Send priority like failed: {e}")
-        else:
-            print("[SEND] skipped by user; ending run after this profile")
-            user_requested_stop = True
+                if not send_bounds:
+                    try:
+                        os.makedirs("logs", exist_ok=True)
+                        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        xml_path = os.path.join("logs", f"send_priority_missing_{ts}.xml")
+                        with open(xml_path, "w", encoding="utf-8") as f:
+                            f.write(post_xml)
+                        _log(f"[SEND] wrote XML snapshot to {xml_path}")
+                    except Exception:
+                        pass
+                    # Recovery: re-focus the comment field, then retry.
+                    try:
+                        if _enter_comment_text(device, width, height, chosen_text, attempts=2):
+                            time.sleep(0.2)
+                            for attempt in range(4):
+                                post_xml = _dump_ui_xml(device)
+                                post_nodes = _parse_ui_nodes(post_xml)
+                                send_bounds = _find_send_priority_like_bounds(post_nodes)
+                                if send_bounds:
+                                    break
+                                _log(f"[SEND] recovery attempt {attempt + 1}/4 failed")
+                                time.sleep(0.35)
+                    except Exception as e:
+                        _log(f"[SEND] recovery failed: {e}")
 
-    if log_state:
-        log_state["target_action"] = target_action
-        _write_run_log(out_path, log_state)
+                if not send_bounds:
+                    raise RuntimeError("Send priority like button not found.")
 
-    # SQL logging (only after irreversible action)
-    if irreversible_action_taken:
-        try:
-            score_breakdown = (
-                f"decision={decision} long_score={long_score} short_score={short_score}\n\n"
-                + score_table
-            )
-            pid = upsert_profile_flat(
-                extracted,
-                eval_result,
-                long_score=int(long_score),
-                short_score=int(short_score),
-                score_breakdown=score_breakdown,
-            )
-            if pid is not None:
-                update_profile_verdict(pid, decision)
-                if isinstance(llm3_result, dict) and llm3_result:
-                    update_profile_opening_messages_json(pid, llm3_result)
-                if isinstance(llm4_result, dict) and llm4_result:
-                    update_profile_opening_pick(pid, llm4_result)
-        except Exception as e:
-            print(f"[sql] log failed: {e}")
-    else:
-        print("[sql] skipped (no irreversible action taken)")
+                if send_approved:
+                    try:
+                        tap_x, tap_y = _tap_bounds(device, send_bounds, width, height)
+                        target_action["comment_text"] = chosen_text.strip()
+                        target_action["send_priority_coords"] = [tap_x, tap_y]
+                        _handle_send_like_anyway(device, width, height)
+                        irreversible_action_taken = True
+                        try:
+                            _write_sent_message_record(
+                                log_state,
+                                extracted,
+                                target_action,
+                                llm4_result if isinstance(llm4_result, dict) else None,
+                                out_path,
+                            )
+                        except Exception:
+                            pass
+                        if not _wait_for_loading_to_clear(device, context="post-send"):
+                            loading_stuck = True
+                    except Exception as e:
+                        raise RuntimeError(f"Send priority like failed: {e}")
+                else:
+                    print("[SEND] skipped by user; ending run after this profile")
+                    user_requested_stop = True
+
+            if log_state:
+                log_state["target_action"] = target_action
+                _write_run_log(out_path, log_state)
+
+            # SQL logging (only after irreversible action)
+            if irreversible_action_taken:
+                try:
+                    score_breakdown = (
+                        f"decision={decision} long_score={long_score} short_score={short_score}\n\n"
+                        + score_table
+                    )
+                    pid = upsert_profile_flat(
+                        extracted,
+                        eval_result,
+                        long_score=int(long_score),
+                        short_score=int(short_score),
+                        score_breakdown=score_breakdown,
+                    )
+                    if pid is not None:
+                        update_profile_verdict(pid, decision)
+                        if isinstance(llm3_result, dict) and llm3_result:
+                            update_profile_opening_messages_json(pid, llm3_result)
+                        if isinstance(llm4_result, dict) and llm4_result:
+                            update_profile_opening_pick(pid, llm4_result)
+                except Exception as e:
+                    print(f"[sql] log failed: {e}")
+            else:
+                print("[sql] skipped (no irreversible action taken)")
+            
+            # If we reached here without exception, break the retry loop
+            break
+        except RetryInteractionException:
+            print("\n[UNDO] Reverting to decision phase...")
+            # Loop continues, re-running decision/action logic
+            continue
 
     t_end = time.perf_counter()
     timings["input_wait_s"] = round(float(timings.get("input_wait_s", 0.0)), 2)
@@ -1061,7 +1373,12 @@ def _run_single_profile(
 
 
 def main() -> int:
+    # Register the pause handler for Ctrl+C
+    signal.signal(signal.SIGINT, _signal_handler)
+
+    global GLOBAL_ARGS
     args = _parse_args()
+    GLOBAL_ARGS = args
     _force_gemini_env()
     set_verbose(args.verbose)
 
@@ -1069,29 +1386,38 @@ def main() -> int:
     max_scrolls = 40
     scroll_step = 900
 
-    device, width, height = _init_device(device_ip)
-    if not device or not width or not height:
-        print("Device/size missing; cannot proceed.")
-        return 1
+    device = None
+    width = height = 0
+    keep_awake = True
+    try:
+        device, width, height = _init_device(device_ip)
+        if not device or not width or not height:
+            print("Device/size missing; cannot proceed.")
+            return 1
+        if keep_awake:
+            _set_keep_awake(True, device=device)
 
-    total_profiles = max(1, int(args.profiles))
-    for idx in range(total_profiles):
-        rc = _run_single_profile(
-            device,
-            width,
-            height,
-            args,
-            max_scrolls,
-            scroll_step,
-            idx,
-            total_profiles,
-        )
-        if rc == 2:
-            break
-        if rc:
-            return rc
+        total_profiles = max(1, int(args.profiles))
+        for idx in range(total_profiles):
+            rc = _run_single_profile(
+                device,
+                width,
+                height,
+                args,
+                max_scrolls,
+                scroll_step,
+                idx,
+                total_profiles,
+            )
+            if rc == 2:
+                break
+            if rc:
+                return rc
 
-    return 0
+        return 0
+    finally:
+        if keep_awake and device:
+            _set_keep_awake(False, device=device)
 
 
 if __name__ == "__main__":
