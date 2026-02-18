@@ -92,7 +92,7 @@ def _force_gemini_env() -> None:
 GLOBAL_ARGS = None
 
 
-class RetryInteractionException(Exception):
+class RetryInteractionException(BaseException):
     """Raised by signal handler to restart the decision/action loop."""
     pass
 
@@ -885,7 +885,9 @@ def _run_single_profile(
                     if send_approved and args.unrestricted:
                         print("[SAFETY] Running LLM5 safety check on message...")
                         chosen_text = (llm4_result.get("chosen_text") or "").strip()
+                        t0 = time.perf_counter()
                         safety_res = run_llm5_safety(extracted, decision, chosen_text, score_table)
+                        timings["llm5_s"] = round(time.perf_counter() - t0, 2)
                         if log_state:
                             log_state["llm5_result"] = safety_res
                             _write_run_log(out_path, log_state)
@@ -1143,7 +1145,9 @@ def _run_single_profile(
                 force_manual_reject = False
                 if args.unrestricted:
                     print("[SAFETY] Running LLM5 safety check on rejection...")
+                    t0 = time.perf_counter()
                     safety_res = run_llm5_safety(extracted, decision, "", score_table)
+                    timings["llm5_s"] = round(time.perf_counter() - t0, 2)
                     if log_state:
                         log_state["llm5_result"] = safety_res
                         _write_run_log(out_path, log_state)
@@ -1316,7 +1320,7 @@ def _run_single_profile(
         f"effective_s={timings.get('effective_elapsed_s')}",
         f"input_wait_s={timings.get('input_wait_s')}",
     ]
-    for key in ("scan_s", "llm1_s", "llm2_s", "llm3_s", "llm4_s"):
+    for key in ("scan_s", "llm1_s", "llm2_s", "llm3_s", "llm4_s", "llm5_s"):
         if key in timings:
             parts.append(f"{key}={timings.get(key)}")
     print("[TIMINGS] " + " ".join(parts))

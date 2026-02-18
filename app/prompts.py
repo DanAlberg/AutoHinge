@@ -167,8 +167,8 @@ def LLM3_LONG(extracted: Dict[str, Any]) -> str:
         "- Do NOT narrate the photo or prompt like a caption. Reference it naturally (GOOD: \"where was this?\" BAD: \"in photo 3\"). The text will appear just under the photo to the recipient. Both will be sent together. Act as if in natural conversation\n"
         "- Avoid generic thirst or scripted pickup tropes (banned words include 'trouble', 'mischief', 'chaos', 'ruin my life', 'danger', 'main character', etc.).\n"
         "- Messages should feel human, relaxed, and effortless.\n"
-        "- Keep each opener under 10 words.\n"
-        "- Don't use full stops or uncommon punctuation. Messages should feel like normal dating app texts rather than AI generated perfection. \n\n"
+        "- Keep each opener under 15 words.\n"
+        "- Don't use full stops. Question marks and capitalisation are allowed. Messages should feel somewhat human rather than AI generated perfection. \n\n"
         "Output format (JSON only):\n"
         "{\n"
         '  "openers": [\n'
@@ -204,8 +204,8 @@ def LLM3_SHORT(extracted: Dict[str, Any]) -> str:
         "- Avoid generic thirst or scripted pickup tropes (banned words include 'trouble', 'mischief', 'chaos', 'ruin my life', 'danger', 'main character', 'elite', etc.).\n"
         "- Each opener must reference a concrete detail from the targeted element and would feel weird on another profile. However, don't overpersonalise to the point of being creepy - i.e. bringing up the specific sub part of London they live in or referencing their profession in places where it doesn't fit naturally\n"
         "- Do NOT narrate the photo or prompt like a caption (never say 'photo 5' or 'first prompt'). The photo, prompt or poll answer will be linked via Hinge UI\n"
-        "- Keep each opener under 10 words.\n\n"
-        "- Don't use full stops or uncommon punctuation. Messages should feel like normal dating app texts rather than AI generated perfection. \n\n"
+        "- Keep each opener under 15 words.\n"
+        "- Don't use full stops. Question marks and capitalisation are allowed. Messages should feel somewhat human rather than AI generated perfection. \n\n"
 
         "Output format (JSON only):\n"
         "{\n"
