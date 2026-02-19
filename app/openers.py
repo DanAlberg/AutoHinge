@@ -2,7 +2,7 @@ import json
 import time
 from typing import Any, Dict
 
-from llm_client import get_default_model, get_llm_client, resolve_model
+from llm_client import get_default_model, get_llm_client, resolve_model, LLMError
 from prompts import LLM3_LONG, LLM3_SHORT, LLM4_LONG, LLM4_SHORT, LLM5_SAFETY
 from ai_trace import _ai_trace_log, _ai_trace_log_response, _ai_trace_prompt_lines
 from runtime import _log
@@ -16,57 +16,86 @@ def run_llm3_long(extracted: Dict[str, Any], model: str | None = None) -> Dict[s
     ]
     trace_lines.extend(_ai_trace_prompt_lines(prompt))
     _ai_trace_log(trace_lines)
+    
+    t0 = time.perf_counter()
     try:
-        t0 = time.perf_counter()
         resp = get_llm_client().chat.completions.create(
             model=resolved_model,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}],
         )
-        dt_ms = int((time.perf_counter() - t0) * 1000)
-        raw = resp.choices[0].message.content or ""
-        try:
-            parsed = json.loads(raw or "{}")
-        except Exception as e:
-            _ai_trace_log_response(
-                "llm3_long",
-                resolved_model,
-                raw,
-                parsed=None,
-                duration_ms=dt_ms,
-                error=f"json_parse_error: {e}",
-            )
-            _log(f"[LLM3] long parse failed: {e}")
-            return {"model_used": resolved_model}
-        if not isinstance(parsed, dict):
-            _ai_trace_log_response(
-                "llm3_long",
-                resolved_model,
-                raw,
-                parsed=None,
-                duration_ms=dt_ms,
-                error="parsed_not_dict",
-            )
-            return {"model_used": resolved_model}
-        parsed["model_used"] = resolved_model
-        _ai_trace_log_response(
-            "llm3_long",
-            resolved_model,
-            raw,
-            parsed=parsed,
-            duration_ms=dt_ms,
-        )
-        return parsed
     except Exception as e:
+        dt_ms = int((time.perf_counter() - t0) * 1000)
         _ai_trace_log_response(
             "llm3_long",
             resolved_model,
             raw="",
             parsed=None,
-            duration_ms=None,
+            duration_ms=dt_ms,
             error=f"call_error: {e}",
         )
-        return {"model_used": resolved_model}
+        raise LLMError(
+            call_id="llm3_long",
+            model=resolved_model,
+            error_type="call_error",
+            error_message=str(e),
+            prompt=prompt,
+            raw_response="",
+            duration_ms=dt_ms,
+        )
+    
+    dt_ms = int((time.perf_counter() - t0) * 1000)
+    raw = resp.choices[0].message.content or ""
+    
+    try:
+        parsed = json.loads(raw or "{}")
+    except Exception as e:
+        _ai_trace_log_response(
+            "llm3_long",
+            resolved_model,
+            raw,
+            parsed=None,
+            duration_ms=dt_ms,
+            error=f"json_parse_error: {e}",
+        )
+        raise LLMError(
+            call_id="llm3_long",
+            model=resolved_model,
+            error_type="json_parse_error",
+            error_message=str(e),
+            prompt=prompt,
+            raw_response=raw,
+            duration_ms=dt_ms,
+        )
+    
+    if not isinstance(parsed, dict):
+        _ai_trace_log_response(
+            "llm3_long",
+            resolved_model,
+            raw,
+            parsed=None,
+            duration_ms=dt_ms,
+            error="parsed_not_dict",
+        )
+        raise LLMError(
+            call_id="llm3_long",
+            model=resolved_model,
+            error_type="format_error",
+            error_message="Response is not a dictionary",
+            prompt=prompt,
+            raw_response=raw,
+            duration_ms=dt_ms,
+        )
+    
+    parsed["model_used"] = resolved_model
+    _ai_trace_log_response(
+        "llm3_long",
+        resolved_model,
+        raw,
+        parsed=parsed,
+        duration_ms=dt_ms,
+    )
+    return parsed
 
 
 def run_llm3_short(extracted: Dict[str, Any], model: str | None = None) -> Dict[str, Any]:
@@ -78,57 +107,86 @@ def run_llm3_short(extracted: Dict[str, Any], model: str | None = None) -> Dict[
     ]
     trace_lines.extend(_ai_trace_prompt_lines(prompt))
     _ai_trace_log(trace_lines)
+    
+    t0 = time.perf_counter()
     try:
-        t0 = time.perf_counter()
         resp = get_llm_client().chat.completions.create(
             model=resolved_model,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}],
         )
-        dt_ms = int((time.perf_counter() - t0) * 1000)
-        raw = resp.choices[0].message.content or ""
-        try:
-            parsed = json.loads(raw or "{}")
-        except Exception as e:
-            _ai_trace_log_response(
-                "llm3_short",
-                resolved_model,
-                raw,
-                parsed=None,
-                duration_ms=dt_ms,
-                error=f"json_parse_error: {e}",
-            )
-            _log(f"[LLM3] short parse failed: {e}")
-            return {"model_used": resolved_model}
-        if not isinstance(parsed, dict):
-            _ai_trace_log_response(
-                "llm3_short",
-                resolved_model,
-                raw,
-                parsed=None,
-                duration_ms=dt_ms,
-                error="parsed_not_dict",
-            )
-            return {"model_used": resolved_model}
-        parsed["model_used"] = resolved_model
-        _ai_trace_log_response(
-            "llm3_short",
-            resolved_model,
-            raw,
-            parsed=parsed,
-            duration_ms=dt_ms,
-        )
-        return parsed
     except Exception as e:
+        dt_ms = int((time.perf_counter() - t0) * 1000)
         _ai_trace_log_response(
             "llm3_short",
             resolved_model,
             raw="",
             parsed=None,
-            duration_ms=None,
+            duration_ms=dt_ms,
             error=f"call_error: {e}",
         )
-        return {"model_used": resolved_model}
+        raise LLMError(
+            call_id="llm3_short",
+            model=resolved_model,
+            error_type="call_error",
+            error_message=str(e),
+            prompt=prompt,
+            raw_response="",
+            duration_ms=dt_ms,
+        )
+    
+    dt_ms = int((time.perf_counter() - t0) * 1000)
+    raw = resp.choices[0].message.content or ""
+    
+    try:
+        parsed = json.loads(raw or "{}")
+    except Exception as e:
+        _ai_trace_log_response(
+            "llm3_short",
+            resolved_model,
+            raw,
+            parsed=None,
+            duration_ms=dt_ms,
+            error=f"json_parse_error: {e}",
+        )
+        raise LLMError(
+            call_id="llm3_short",
+            model=resolved_model,
+            error_type="json_parse_error",
+            error_message=str(e),
+            prompt=prompt,
+            raw_response=raw,
+            duration_ms=dt_ms,
+        )
+    
+    if not isinstance(parsed, dict):
+        _ai_trace_log_response(
+            "llm3_short",
+            resolved_model,
+            raw,
+            parsed=None,
+            duration_ms=dt_ms,
+            error="parsed_not_dict",
+        )
+        raise LLMError(
+            call_id="llm3_short",
+            model=resolved_model,
+            error_type="format_error",
+            error_message="Response is not a dictionary",
+            prompt=prompt,
+            raw_response=raw,
+            duration_ms=dt_ms,
+        )
+    
+    parsed["model_used"] = resolved_model
+    _ai_trace_log_response(
+        "llm3_short",
+        resolved_model,
+        raw,
+        parsed=parsed,
+        duration_ms=dt_ms,
+    )
+    return parsed
 
 
 def _run_llm4_prompt(prompt: str, model: str | None = None) -> Dict[str, Any]:
@@ -139,52 +197,79 @@ def _run_llm4_prompt(prompt: str, model: str | None = None) -> Dict[str, Any]:
     ]
     trace_lines.extend(_ai_trace_prompt_lines(prompt))
     _ai_trace_log(trace_lines)
+    
+    t0 = time.perf_counter()
     try:
-        t0 = time.perf_counter()
         resp = get_llm_client().chat.completions.create(
             model=resolved_model,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}],
         )
-        dt_ms = int((time.perf_counter() - t0) * 1000)
-        raw = resp.choices[0].message.content or ""
-        try:
-            parsed = json.loads(raw or "{}")
-        except Exception as e:
-            _ai_trace_log_response(
-                "llm4",
-                resolved_model,
-                raw,
-                parsed=None,
-                duration_ms=dt_ms,
-                error=f"json_parse_error: {e}",
-            )
-            _log(f"[LLM4] parse failed: {e}")
-            return {"model_used": resolved_model}
-        try:
-            _ai_trace_log_response(
-                "llm4",
-                resolved_model,
-                raw,
-                parsed=parsed,
-                duration_ms=dt_ms,
-            )
-        except Exception:
-            pass
-        if isinstance(parsed, dict):
-            parsed["model_used"] = resolved_model
-            return parsed
-        return {"model_used": resolved_model}
     except Exception as e:
+        dt_ms = int((time.perf_counter() - t0) * 1000)
         _ai_trace_log_response(
             "llm4",
             resolved_model,
             raw="",
             parsed=None,
-            duration_ms=None,
+            duration_ms=dt_ms,
             error=f"call_error: {e}",
         )
-        return {"model_used": resolved_model}
+        raise LLMError(
+            call_id="llm4",
+            model=resolved_model,
+            error_type="call_error",
+            error_message=str(e),
+            prompt=prompt,
+            raw_response="",
+            duration_ms=dt_ms,
+        )
+    
+    dt_ms = int((time.perf_counter() - t0) * 1000)
+    raw = resp.choices[0].message.content or ""
+    
+    try:
+        parsed = json.loads(raw or "{}")
+    except Exception as e:
+        _ai_trace_log_response(
+            "llm4",
+            resolved_model,
+            raw,
+            parsed=None,
+            duration_ms=dt_ms,
+            error=f"json_parse_error: {e}",
+        )
+        raise LLMError(
+            call_id="llm4",
+            model=resolved_model,
+            error_type="json_parse_error",
+            error_message=str(e),
+            prompt=prompt,
+            raw_response=raw,
+            duration_ms=dt_ms,
+        )
+    
+    _ai_trace_log_response(
+        "llm4",
+        resolved_model,
+        raw,
+        parsed=parsed,
+        duration_ms=dt_ms,
+    )
+    
+    if not isinstance(parsed, dict):
+        raise LLMError(
+            call_id="llm4",
+            model=resolved_model,
+            error_type="format_error",
+            error_message="Response is not a dictionary",
+            prompt=prompt,
+            raw_response=raw,
+            duration_ms=dt_ms,
+        )
+    
+    parsed["model_used"] = resolved_model
+    return parsed
 
 
 def run_llm4_long(openers_json: Dict[str, Any], model: str | None = None) -> Dict[str, Any]:
@@ -217,33 +302,77 @@ def run_llm5_safety(
     ]
     trace_lines.extend(_ai_trace_prompt_lines(prompt))
     _ai_trace_log(trace_lines)
+    
+    t0 = time.perf_counter()
     try:
-        t0 = time.perf_counter()
         resp = get_llm_client().chat.completions.create(
             model=resolved_model,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}],
         )
-        dt_ms = int((time.perf_counter() - t0) * 1000)
-        raw = resp.choices[0].message.content or ""
-        try:
-            parsed = json.loads(raw or "{}")
-        except Exception as e:
-            _ai_trace_log_response("llm5_safety", resolved_model, raw, parsed=None, duration_ms=dt_ms, error=f"json_parse_error: {e}")
-            return {"approved": True, "reason": "json_error_fallback", "model_used": resolved_model}
-        
-        _ai_trace_log_response("llm5_safety", resolved_model, raw, parsed=parsed, duration_ms=dt_ms)
-        if isinstance(parsed, dict):
-            parsed["model_used"] = resolved_model
-            return parsed
-        return {"approved": True, "reason": "format_error_fallback", "model_used": resolved_model}
     except Exception as e:
+        dt_ms = int((time.perf_counter() - t0) * 1000)
         _ai_trace_log_response(
             "llm5_safety",
             resolved_model,
             raw="",
             parsed=None,
-            duration_ms=None,
+            duration_ms=dt_ms,
             error=f"call_error: {e}",
         )
-        return {"approved": True, "reason": "call_error_fallback", "model_used": resolved_model}
+        raise LLMError(
+            call_id="llm5_safety",
+            model=resolved_model,
+            error_type="call_error",
+            error_message=str(e),
+            prompt=prompt,
+            raw_response="",
+            duration_ms=dt_ms,
+        )
+    
+    dt_ms = int((time.perf_counter() - t0) * 1000)
+    raw = resp.choices[0].message.content or ""
+    
+    try:
+        parsed = json.loads(raw or "{}")
+    except Exception as e:
+        _ai_trace_log_response(
+            "llm5_safety",
+            resolved_model,
+            raw,
+            parsed=None,
+            duration_ms=dt_ms,
+            error=f"json_parse_error: {e}",
+        )
+        raise LLMError(
+            call_id="llm5_safety",
+            model=resolved_model,
+            error_type="json_parse_error",
+            error_message=str(e),
+            prompt=prompt,
+            raw_response=raw,
+            duration_ms=dt_ms,
+        )
+    
+    if not isinstance(parsed, dict):
+        _ai_trace_log_response(
+            "llm5_safety",
+            resolved_model,
+            raw,
+            parsed=None,
+            duration_ms=dt_ms,
+            error="parsed_not_dict",
+        )
+        raise LLMError(
+            call_id="llm5_safety",
+            model=resolved_model,
+            error_type="format_error",
+            error_message="Response is not a dictionary",
+            prompt=prompt,
+            raw_response=raw,
+            duration_ms=dt_ms,
+        )
+    
+    _ai_trace_log_response("llm5_safety", resolved_model, raw, parsed=parsed, duration_ms=dt_ms)
+    parsed["model_used"] = resolved_model
+    return parsed

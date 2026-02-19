@@ -19,6 +19,7 @@ import config  # ensure .env is loaded early
 from helper_functions import ensure_adb_running, connect_device, get_screen_resolution, open_hinge
 from extraction import run_llm1_visual, run_profile_eval_llm, _build_extracted_profile
 from openers import run_llm3_long, run_llm3_short, run_llm4_long, run_llm4_short, run_llm5_safety
+from llm_client import LLMError
 from profile_utils import _get_core, _norm_value
 from runtime import _is_run_json_enabled, _log, set_verbose
 from scoring import _classify_preference_flag, _format_score_table, _score_profile_long, _score_profile_short
@@ -108,19 +109,27 @@ def _signal_handler(sig, frame):
     print("\n\n[PAUSED] Execution paused via Ctrl+C.")
     print("1. Continue (Resume program)")
     print(f"2. Toggle Unrestricted Mode (Current: {GLOBAL_ARGS.unrestricted if GLOBAL_ARGS else 'Unknown'})")
-    print("3. Undo / Retry (Restart decision & action for this profile)")
-    print("4. Quit (Kill program)")
+    print(f"3. Toggle Elite Review Mode (Current: {GLOBAL_ARGS.review_elite if GLOBAL_ARGS else 'Unknown'})")
+    print("4. Undo / Retry (Restart decision & action for this profile)")
+    print("5. Quit (Kill program)")
     
     try:
-        choice = input("Select option (1-4): ").strip()
+        choice = input("Select option (1-5): ").strip()
         if choice == '2':
             if GLOBAL_ARGS:
                 GLOBAL_ARGS.unrestricted = not GLOBAL_ARGS.unrestricted
                 print(f"[CONFIG] Unrestricted mode set to: {GLOBAL_ARGS.unrestricted}")
         elif choice == '3':
+            if GLOBAL_ARGS:
+                GLOBAL_ARGS.review_elite = not GLOBAL_ARGS.review_elite
+                print(f"[CONFIG] Elite Review mode set to: {GLOBAL_ARGS.review_elite}")
+        elif choice == '4':
+            if GLOBAL_ARGS:
+                GLOBAL_ARGS.unrestricted = False
+                print("[CONFIG] Unrestricted mode disabled for retry")
             signal.signal(signal.SIGINT, _signal_handler)  # Restore handler before raising
             raise RetryInteractionException()
-        elif choice == '4':
+        elif choice == '5':
             print("[QUIT] Exiting...")
             sys.exit(0)
     except (KeyboardInterrupt, EOFError):
@@ -145,6 +154,7 @@ def _init_device(device_ip: str):
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the Hinge scrape/score/opener pipeline")
     parser.add_argument("--unrestricted", action="store_true", help="Skip confirmations for dislike/send")
+    parser.add_argument("--no-review-elite", action="store_false", dest="review_elite", help="Disable manual review for elite profiles (Default: Enabled)")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose [SCROLL]/[PHOTO] logging")
     parser.add_argument(
         "--profiles",
@@ -465,6 +475,29 @@ def _write_run_log(path: str, data: Dict[str, Any]) -> None:
         print(f"[LOG] failed to write {path}: {e}")
 
 
+def _handle_llm_error(error: LLMError, log_state: Dict[str, Any], out_path: str) -> int:
+    """
+    Handle an LLMError by logging to JSON and printing a clear console error.
+    Returns exit code 1 for the caller to use.
+    """
+    # Add error to log state
+    log_state["llm_error"] = error.to_dict()
+    _write_run_log(out_path, log_state)
+    
+    # Print clear console error
+    print(f"\n{'='*60}")
+    print(f"[LLM ERROR] {error.call_id} failed")
+    print(f"  Type: {error.error_type}")
+    print(f"  Model: {error.model}")
+    print(f"  Error: {error.error_message}")
+    if error.duration_ms is not None:
+        print(f"  Duration: {error.duration_ms}ms")
+    print(f"  Log file: {out_path}")
+    print(f"{'='*60}\n")
+    
+    return 1
+
+
 def _safe_name(value: str) -> str:
     value = (value or "").strip()
     value = re.sub(r"[^A-Za-z0-9._-]+", "_", value)
@@ -676,7 +709,7 @@ def _run_single_profile(
     _clear_crops_folder()
     if not _wait_for_loading_to_clear(device, context="start"):
         return 3
-    _log("[UI] Single-pass scan (slow scroll, capture as you go)...")
+    
     t0 = time.perf_counter()
     scan_result = _scan_profile_single_pass(
         device,
@@ -783,7 +816,10 @@ def _run_single_profile(
             decision = "reject"
     elif dating_intention == _norm_value("Life partner"):
         if decision == "short_pickup":
-            decision = "reject"
+            if long_ok:
+                decision = "long_pickup"
+            else:
+                decision = "reject"
 
     if log_state:
         log_state["gate_decision"] = decision
@@ -885,16 +921,27 @@ def _run_single_profile(
                     if send_approved and args.unrestricted:
                         print("[SAFETY] Running LLM5 safety check on message...")
                         chosen_text = (llm4_result.get("chosen_text") or "").strip()
+                        
+                        safety_context = score_table
+                        if args.review_elite:
+                            # Pass flag to prompts.py to inject the strict 1%er criteria
+                            safety_context += "\n[ELITE_MODE_FLAG]"
+
                         t0 = time.perf_counter()
-                        safety_res = run_llm5_safety(extracted, decision, chosen_text, score_table)
+                        safety_res = run_llm5_safety(extracted, decision, chosen_text, safety_context)
                         timings["llm5_s"] = round(time.perf_counter() - t0, 2)
                         if log_state:
                             log_state["llm5_result"] = safety_res
                             _write_run_log(out_path, log_state)
                         if not safety_res.get("approved"):
                             reason = safety_res.get("reason", "Unknown reason")
-                            print(f"[SAFETY] 🛑 INTERVENTION NEEDED: {reason}")
-                            _alert_user(f"Safety Intervention Needed:\n\n{reason}")
+                            is_elite = safety_res.get("elite_signal", False)
+                            if is_elite:
+                                print(f"[ELITE] 💎 HNW/Elite Profile Detected: {reason}")
+                                _alert_user(f"Elite Profile Detected!\n\n{reason}")
+                            else:
+                                print(f"[SAFETY] 🛑 INTERVENTION NEEDED: {reason}")
+                                _alert_user(f"Safety Intervention Needed:\n\n{reason}")
                             # Downgrade to manual mode for this interaction
                             llm4_result, send_approved, redo_requested = _choose_opening_message(
                                 llm3_result, llm4_result, unrestricted=False, timings=timings
@@ -1145,16 +1192,25 @@ def _run_single_profile(
                 force_manual_reject = False
                 if args.unrestricted:
                     print("[SAFETY] Running LLM5 safety check on rejection...")
+                    safety_context = score_table
+                    if args.review_elite:
+                        safety_context += "\n[ELITE_MODE_FLAG]"
+
                     t0 = time.perf_counter()
-                    safety_res = run_llm5_safety(extracted, decision, "", score_table)
+                    safety_res = run_llm5_safety(extracted, decision, "", safety_context)
                     timings["llm5_s"] = round(time.perf_counter() - t0, 2)
                     if log_state:
                         log_state["llm5_result"] = safety_res
                         _write_run_log(out_path, log_state)
                     if not safety_res.get("approved"):
                         reason = safety_res.get("reason", "Unknown reason")
-                        print(f"[SAFETY] 🛑 INTERVENTION NEEDED (Unfair Rejection?): {reason}")
-                        _alert_user(f"Safety Intervention Needed (Rejection):\n\n{reason}")
+                        is_elite = safety_res.get("elite_signal", False)
+                        if is_elite:
+                            print(f"[ELITE] 💎 HNW/Elite Profile Detected (Preventing Auto-Reject): {reason}")
+                            _alert_user(f"Elite Profile - Manual Review Required:\n\n{reason}")
+                        else:
+                            print(f"[SAFETY] 🛑 INTERVENTION NEEDED (Unfair Rejection?): {reason}")
+                            _alert_user(f"Safety Intervention Needed (Rejection):\n\n{reason}")
                         force_manual_reject = True
                     else:
                         print("[SAFETY] ✅ Rejection Approved")
@@ -1175,8 +1231,20 @@ def _run_single_profile(
                             print(f"[DISLIKE] tap failed: {e}")
                     else:
                         print("[DISLIKE] skipped by user")
+                        # If safety blocked the auto-reject and user declined manual reject,
+                        # switch to long_pickup flow instead of ending
+                        if force_manual_reject:
+                            print("[GATE] switching to long_pickup after declined dislike")
+                            decision = "long_pickup"
+                            continue
                 else:
                     print("[DISLIKE] button not found")
+                    # If safety blocked the auto-reject and dislike button not found,
+                    # switch to long_pickup flow
+                    if force_manual_reject:
+                        print("[GATE] switching to long_pickup (dislike button not found)")
+                        decision = "long_pickup"
+                        continue
 
             if log_state:
                 log_state["target_action"] = target_action
@@ -1403,16 +1471,35 @@ def main() -> int:
 
         total_profiles = max(1, int(args.profiles))
         for idx in range(total_profiles):
-            rc = _run_single_profile(
-                device,
-                width,
-                height,
-                args,
-                max_scrolls,
-                scroll_step,
-                idx,
-                total_profiles,
-            )
+            try:
+                rc = _run_single_profile(
+                    device,
+                    width,
+                    height,
+                    args,
+                    max_scrolls,
+                    scroll_step,
+                    idx,
+                    total_profiles,
+                )
+            except LLMError as e:
+                # Create minimal log state for error reporting
+                log_state: Dict[str, Any] = {}
+                try:
+                    os.makedirs("logs", exist_ok=True)
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    suffix = f"_{idx + 1:02d}" if total_profiles > 1 else ""
+                    out_path = os.path.join("logs", f"rating_test_{ts}{suffix}.json")
+                    log_state = {
+                        "meta": {
+                            "timestamp": datetime.now().isoformat(timespec="seconds"),
+                            "llm_provider": os.getenv("LLM_PROVIDER", ""),
+                            "model": e.model,
+                        },
+                    }
+                except Exception:
+                    out_path = ""
+                return _handle_llm_error(e, log_state, out_path)
             if rc == 2:
                 break
             if rc:

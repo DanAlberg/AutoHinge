@@ -166,10 +166,11 @@ def _bounds_visible(
     bounds: Optional[Tuple[int, int, int, int]],
     scroll_area: Optional[Tuple[int, int, int, int]],
     min_height: int = 80,
+    top_margin: int = 100,
 ) -> bool:
     if not bounds or not scroll_area:
         return False
-    vis_top = max(bounds[1], scroll_area[1])
+    vis_top = max(bounds[1], scroll_area[1] + top_margin)
     vis_bottom = min(bounds[3], scroll_area[3])
     vis_h = vis_bottom - vis_top
     return vis_h >= min_height

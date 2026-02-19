@@ -165,10 +165,10 @@ def LLM3_LONG(extracted: Dict[str, Any]) -> str:
         "- Vibe: sweet, curious, flirty\n"
         "- Each opener must reference a concrete detail from the targeted element and would feel weird on another profile. However, don't overpersonalise to the point of being creepy - i.e. bringing up the specific sub part of London they live in or referencing their profession in places where it doesn't fit naturally\n"
         "- Do NOT narrate the photo or prompt like a caption. Reference it naturally (GOOD: \"where was this?\" BAD: \"in photo 3\"). The text will appear just under the photo to the recipient. Both will be sent together. Act as if in natural conversation\n"
-        "- Avoid generic thirst or scripted pickup tropes (banned words include 'trouble', 'mischief', 'chaos', 'ruin my life', 'danger', 'main character', etc.).\n"
+        "- Avoid generic thirst or scripted pickup tropes (banned words include 'trouble', 'mischief', 'chaos', 'ruin my life', 'danger', 'main character', 'elite', etc.).\n"
         "- Messages should feel human, relaxed, and effortless.\n"
         "- Keep each opener under 15 words.\n"
-        "- Don't use full stops. Question marks and capitalisation are allowed. Messages should feel somewhat human rather than AI generated perfection. \n\n"
+        "- Use question marks. Don't use full stops. Messages should feel somewhat human rather than AI generated perfection. \n\n"
         "Output format (JSON only):\n"
         "{\n"
         '  "openers": [\n'
@@ -205,7 +205,7 @@ def LLM3_SHORT(extracted: Dict[str, Any]) -> str:
         "- Each opener must reference a concrete detail from the targeted element and would feel weird on another profile. However, don't overpersonalise to the point of being creepy - i.e. bringing up the specific sub part of London they live in or referencing their profession in places where it doesn't fit naturally\n"
         "- Do NOT narrate the photo or prompt like a caption (never say 'photo 5' or 'first prompt'). The photo, prompt or poll answer will be linked via Hinge UI\n"
         "- Keep each opener under 15 words.\n"
-        "- Don't use full stops. Question marks and capitalisation are allowed. Messages should feel somewhat human rather than AI generated perfection. \n\n"
+        "- Use question marks. Don't use full stops. Messages should feel somewhat human rather than AI generated perfection. \n\n"
 
         "Output format (JSON only):\n"
         "{\n"
@@ -325,8 +325,13 @@ def LLM4_SHORT(openers_json: Dict[str, Any]) -> str:
 
 
 def LLM5_SAFETY(extracted: Dict[str, Any], decision: str, chosen_text: str, score_table: str) -> str:
+    elite_mode = False
+    if "[ELITE_MODE_FLAG]" in score_table:
+        elite_mode = True
+        score_table = score_table.replace("[ELITE_MODE_FLAG]", "")
+
     extracted_json = json.dumps(extracted or {}, ensure_ascii=False, indent=2)
-    return (
+    prompt = (
         "You are a final safety check for an automated dating assistant.\n"
         "Your goal is to prevent mistakes: either sending bad messages OR unfairly rejecting good profiles.\n\n"
         "Profile Data:\n"
@@ -347,9 +352,34 @@ def LLM5_SAFETY(extracted: Dict[str, Any], decision: str, chosen_text: str, scor
         "   - If the profile is clearly bad/incompatible/not good enough, approval is correct.\n\n"
         "If the agent is making a mistake (bad message OR unfair rejection), return approved=false.\n"
         "Otherwise, return approved=true.\n\n"
-        "Output JSON only:\n"
-        "{\n"
-        '  "approved": true,\n'
-        '  "reason": "..."\n'
-        "}\n"
     )
+
+    if elite_mode:
+        prompt += (
+            "[ELITE REVIEW MODE ACTIVE]\n"
+            "The user wants to manually review profiles that demonstrate exceptional academic or career achievement (High Ambition/High Status). The goal is to identify potential power-couple matches.\n"
+            "Look at the 'Scoring Summary' provided. You MUST REJECT/DISAPPROVE if the profile meets these criteria, with the reason 'High Achievement Profile Detected' and set elite_signal=true.\n\n"
+            "Criteria for High Achievement Profile (flag if ANY are met):\n"
+            "1. The 'Eval signals' in the score summary show `job_band=T3` or `job_band=T4`.\n"
+            "2. The 'Eval signals' show `university_elite=1` AND the job is in a high-trajectory field (e.g., tech, finance, law, medicine, consulting).\n\n"
+            "3. EDGE CASE: You judge from the profile that job_band may have been wrong and the subject could realistically be earning a 6-7+ figure income. \n\n"
+            "Your task is to apply these rules strictly. A standard professional like a doctor or lawyer should be flagged if their context suggests a high trajectory (e.g., elite university, T3+ job band). Do not flag T1/T2 jobs unless there's a strong compensating signal like an elite university.\n"
+        )
+        prompt += (
+            "Output JSON only:\n"
+            "{\n"
+            '  "approved": true,\n'
+            '  "reason": "...",\n'
+            '  "elite_signal": false,\n'
+            '  "elite_signal_reason": "..."\n'
+            "}\n"
+        )
+    else:
+        prompt += (
+            "Output JSON only:\n"
+            "{\n"
+            '  "approved": true,\n'
+            '  "reason": "..."\n'
+            "}\n"
+        )
+    return prompt

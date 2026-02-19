@@ -4,7 +4,7 @@ import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from llm_client import get_default_model, get_llm_client, resolve_model
+from llm_client import get_default_model, get_llm_client, resolve_model, LLMError
 from prompts import LLM1_VISUAL, LLM2
 from ai_trace import (
     _ai_trace_image_lines,
@@ -84,64 +84,86 @@ def run_profile_eval_llm(extracted: Dict[str, Any], model: str | None = None) ->
     trace_lines.extend(_ai_trace_prompt_lines(prompt))
     _ai_trace_log(trace_lines)
 
+    t0 = time.perf_counter()
     try:
-        t0 = time.perf_counter()
         resp = get_llm_client().chat.completions.create(
             model=resolved_model,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}],
         )
-        dt_ms = int((time.perf_counter() - t0) * 1000)
-        raw = resp.choices[0].message.content or ""
-        try:
-            parsed = json.loads(raw or "{}")
-        except Exception as e:
-            _ai_trace_log_response(
-                "profile_eval_llm",
-                resolved_model,
-                raw,
-                parsed=None,
-                duration_ms=dt_ms,
-                error=f"json_parse_error: {e}",
-            )
-            _log(f"[LLM2] parse failed: {e}")
-            d = _default_profile_eval()
-            d["model_used"] = resolved_model
-            return d
-        if not isinstance(parsed, dict):
-            _ai_trace_log_response(
-                "profile_eval_llm",
-                resolved_model,
-                raw,
-                parsed=None,
-                duration_ms=dt_ms,
-                error="parsed_not_dict",
-            )
-            d = _default_profile_eval()
-            d["model_used"] = resolved_model
-            return d
-        parsed = normalize_dashes(parsed)
-        parsed["model_used"] = resolved_model
-        _ai_trace_log_response(
-            "profile_eval_llm",
-            resolved_model,
-            raw,
-            parsed=parsed,
-            duration_ms=dt_ms,
-        )
-        return parsed
     except Exception as e:
+        dt_ms = int((time.perf_counter() - t0) * 1000)
         _ai_trace_log_response(
             "profile_eval_llm",
             resolved_model,
             raw="",
             parsed=None,
-            duration_ms=None,
+            duration_ms=dt_ms,
             error=f"call_error: {e}",
         )
-        d = _default_profile_eval()
-        d["model_used"] = resolved_model
-        return d
+        raise LLMError(
+            call_id="profile_eval_llm",
+            model=resolved_model,
+            error_type="call_error",
+            error_message=str(e),
+            prompt=prompt,
+            raw_response="",
+            duration_ms=dt_ms,
+        )
+    
+    dt_ms = int((time.perf_counter() - t0) * 1000)
+    raw = resp.choices[0].message.content or ""
+    
+    try:
+        parsed = json.loads(raw or "{}")
+    except Exception as e:
+        _ai_trace_log_response(
+            "profile_eval_llm",
+            resolved_model,
+            raw,
+            parsed=None,
+            duration_ms=dt_ms,
+            error=f"json_parse_error: {e}",
+        )
+        raise LLMError(
+            call_id="profile_eval_llm",
+            model=resolved_model,
+            error_type="json_parse_error",
+            error_message=str(e),
+            prompt=prompt,
+            raw_response=raw,
+            duration_ms=dt_ms,
+        )
+    
+    if not isinstance(parsed, dict):
+        _ai_trace_log_response(
+            "profile_eval_llm",
+            resolved_model,
+            raw,
+            parsed=None,
+            duration_ms=dt_ms,
+            error="parsed_not_dict",
+        )
+        raise LLMError(
+            call_id="profile_eval_llm",
+            model=resolved_model,
+            error_type="format_error",
+            error_message="Response is not a dictionary",
+            prompt=prompt,
+            raw_response=raw,
+            duration_ms=dt_ms,
+        )
+    
+    parsed = normalize_dashes(parsed)
+    parsed["model_used"] = resolved_model
+    _ai_trace_log_response(
+        "profile_eval_llm",
+        resolved_model,
+        raw,
+        parsed=parsed,
+        duration_ms=dt_ms,
+    )
+    return parsed
 
 
 def run_llm1_visual(
@@ -158,65 +180,87 @@ def run_llm1_visual(
     trace_lines.extend(_ai_trace_prompt_lines(prompt))
     trace_lines.extend(_ai_trace_image_lines(image_paths))
     _ai_trace_log(trace_lines)
+    
+    t0 = time.perf_counter()
     try:
-        t0 = time.perf_counter()
         resp = get_llm_client().chat.completions.create(
             model=resolved_model,
             response_format={"type": "json_object"},
             messages=payload.get("messages", []),
         )
-        dt_ms = int((time.perf_counter() - t0) * 1000)
-        raw = resp.choices[0].message.content or ""
-        try:
-            parsed = json.loads(raw or "{}")
-        except Exception as e:
-            _ai_trace_log_response(
-                "llm1_visual",
-                resolved_model,
-                raw,
-                parsed=None,
-                duration_ms=dt_ms,
-                error=f"json_parse_error: {e}",
-            )
-            _log(f"[LLM1] parse failed: {e}")
-            meta = payload.get("meta", {})
-            meta["model_used"] = resolved_model
-            return {}, meta
-        if not isinstance(parsed, dict):
-            _ai_trace_log_response(
-                "llm1_visual",
-                resolved_model,
-                raw,
-                parsed=None,
-                duration_ms=dt_ms,
-                error="parsed_not_dict",
-            )
-            meta = payload.get("meta", {})
-            meta["model_used"] = resolved_model
-            return {}, meta
-        _ai_trace_log_response(
-            "llm1_visual",
-            resolved_model,
-            raw,
-            parsed=parsed,
-            duration_ms=dt_ms,
-        )
-        meta = payload.get("meta", {})
-        meta["model_used"] = resolved_model
-        return parsed, meta
     except Exception as e:
+        dt_ms = int((time.perf_counter() - t0) * 1000)
         _ai_trace_log_response(
             "llm1_visual",
             resolved_model,
             raw="",
             parsed=None,
-            duration_ms=None,
+            duration_ms=dt_ms,
             error=f"call_error: {e}",
         )
-        _log(f"[LLM1] visual call failed: {e}")
-        meta = payload.get("meta", {})
-        meta["model_used"] = resolved_model
-        return {}, meta
+        raise LLMError(
+            call_id="llm1_visual",
+            model=resolved_model,
+            error_type="call_error",
+            error_message=str(e),
+            prompt=prompt,
+            raw_response="",
+            duration_ms=dt_ms,
+        )
+    
+    dt_ms = int((time.perf_counter() - t0) * 1000)
+    raw = resp.choices[0].message.content or ""
+    
+    try:
+        parsed = json.loads(raw or "{}")
+    except Exception as e:
+        _ai_trace_log_response(
+            "llm1_visual",
+            resolved_model,
+            raw,
+            parsed=None,
+            duration_ms=dt_ms,
+            error=f"json_parse_error: {e}",
+        )
+        raise LLMError(
+            call_id="llm1_visual",
+            model=resolved_model,
+            error_type="json_parse_error",
+            error_message=str(e),
+            prompt=prompt,
+            raw_response=raw,
+            duration_ms=dt_ms,
+        )
+    
+    if not isinstance(parsed, dict):
+        _ai_trace_log_response(
+            "llm1_visual",
+            resolved_model,
+            raw,
+            parsed=None,
+            duration_ms=dt_ms,
+            error="parsed_not_dict",
+        )
+        raise LLMError(
+            call_id="llm1_visual",
+            model=resolved_model,
+            error_type="format_error",
+            error_message="Response is not a dictionary",
+            prompt=prompt,
+            raw_response=raw,
+            duration_ms=dt_ms,
+        )
+    
+    _ai_trace_log_response(
+        "llm1_visual",
+        resolved_model,
+        raw,
+        parsed=parsed,
+        duration_ms=dt_ms,
+    )
+    meta = payload.get("meta", {})
+    meta["model_used"] = resolved_model
+    return parsed, meta
 
 
 def _build_extracted_profile(

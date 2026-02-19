@@ -4,6 +4,47 @@ from types import SimpleNamespace
 
 from openai import OpenAI
 
+
+class LLMError(Exception):
+    """Exception raised when an LLM call fails. Captures all relevant context for debugging."""
+    
+    def __init__(
+        self,
+        call_id: str,
+        model: str,
+        error_type: str,
+        error_message: str,
+        prompt: str = "",
+        raw_response: str = "",
+        duration_ms: Optional[int] = None,
+    ):
+        self.call_id = call_id
+        self.model = model
+        self.error_type = error_type  # "call_error" | "json_parse_error" | "format_error"
+        self.error_message = error_message
+        self.prompt = prompt
+        self.raw_response = raw_response
+        self.duration_ms = duration_ms
+        super().__init__(f"[{call_id}] {error_type}: {error_message}")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize error details for JSON logging."""
+        prompt_preview = self.prompt
+        if len(prompt_preview) > 1000:
+            prompt_preview = prompt_preview[:1000] + "... (truncated)"
+        raw_preview = self.raw_response
+        if raw_preview and len(raw_preview) > 2000:
+            raw_preview = raw_preview[:2000] + "... (truncated)"
+        return {
+            "call_id": self.call_id,
+            "model": self.model,
+            "error_type": self.error_type,
+            "error_message": self.error_message,
+            "prompt_preview": prompt_preview,
+            "raw_response_preview": raw_preview if raw_preview else None,
+            "duration_ms": self.duration_ms,
+        }
+
 try:
     from google import genai
 except Exception:

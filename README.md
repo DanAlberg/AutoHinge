@@ -61,6 +61,7 @@ Workflow:
 
 Options
 - `--unrestricted`: skips confirmations before dislike and send priority like
+- `--no-review-elite`: disable manual review for elite profiles (on by default)
 - `--profiles N`: process N profiles then exit (default: 1)
 - `--verbose`: enable verbose console logs (includes `[SCROLL]` and `[PHOTO]`)
 
