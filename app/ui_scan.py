@@ -1292,6 +1292,124 @@ def _match_photo_bounds_by_hash(
     return None, best_dist
 
 
+def _find_show_caption_button(
+    nodes: List[Dict[str, Any]],
+    photo_bounds: Tuple[int, int, int, int],
+) -> Optional[Tuple[int, int, int, int]]:
+    """
+    Find the 'Show caption' button within a photo's bounds.
+    Returns the button bounds if found, None otherwise.
+    """
+    x1, y1, x2, y2 = photo_bounds
+    for n in nodes:
+        if n.get("cls") != "android.widget.Button":
+            continue
+        cd = (n.get("content_desc") or "").strip().lower()
+        if cd != "show caption":
+            continue
+        b = n.get("bounds")
+        if not b:
+            continue
+        # Button should be inside or near the photo bounds
+        cx, cy = _bounds_center(b)
+        if x1 <= cx <= x2 and y1 <= cy <= y2:
+            return b
+    return None
+
+
+def _find_hide_caption_button(
+    nodes: List[Dict[str, Any]],
+    photo_bounds: Tuple[int, int, int, int],
+) -> Optional[Tuple[int, int, int, int]]:
+    """
+    Find the 'Hide caption' button within a photo's bounds.
+    """
+    x1, y1, x2, y2 = photo_bounds
+    for n in nodes:
+        if n.get("cls") != "android.widget.Button":
+            continue
+        cd = (n.get("content_desc") or "").strip().lower()
+        if cd != "hide caption":
+            continue
+        b = n.get("bounds")
+        if not b:
+            continue
+        cx, cy = _bounds_center(b)
+        if x1 <= cx <= x2 and y1 <= cy <= y2:
+            return b
+    return None
+
+
+def _extract_caption_text(
+    nodes: List[Dict[str, Any]],
+    photo_bounds: Tuple[int, int, int, int],
+) -> Optional[str]:
+    """
+    Extract caption text from a photo that has a visible caption overlay.
+    The caption appears as a View with content-desc starting with 'Location '.
+    """
+    x1, y1, x2, y2 = photo_bounds
+    for n in nodes:
+        cd = (n.get("content_desc") or "").strip()
+        if not cd:
+            continue
+        # Caption format: "Location Wadi Rum " or similar
+        if cd.lower().startswith("location "):
+            b = n.get("bounds")
+            if not b:
+                continue
+            # Should be within photo bounds
+            cx, cy = _bounds_center(b)
+            if x1 <= cx <= x2 and y1 <= cy <= y2:
+                # Strip "Location " prefix and trailing whitespace
+                caption = cd[9:].strip()  # "Location " is 9 chars
+                return caption if caption else None
+    return None
+
+
+def _get_photo_caption(
+    device,
+    width: int,
+    height: int,
+    nodes: List[Dict[str, Any]],
+    photo_bounds: Tuple[int, int, int, int],
+) -> Tuple[Optional[str], List[Dict[str, Any]]]:
+    """
+    Check if a photo has a caption button, tap it, extract caption text, and hide it.
+    Returns (caption_text or None, updated_nodes).
+    """
+    show_btn = _find_show_caption_button(nodes, photo_bounds)
+    if not show_btn:
+        return None, nodes
+    
+    # Tap "Show caption"
+    tap_x, tap_y = _bounds_center(show_btn)
+    tap(device, tap_x, tap_y)
+    time.sleep(0.3)
+    
+    # Re-dump UI to get the caption
+    xml = _dump_ui_xml(device)
+    nodes = _parse_ui_nodes(xml)
+    
+    # Extract caption text
+    caption = _extract_caption_text(nodes, photo_bounds)
+    
+    if caption:
+        _log(f"[PHOTO] caption extracted: '{caption}'")
+    
+    # Tap "Hide caption" to dismiss
+    hide_btn = _find_hide_caption_button(nodes, photo_bounds)
+    if hide_btn:
+        tap_x, tap_y = _bounds_center(hide_btn)
+        tap(device, tap_x, tap_y)
+        time.sleep(0.2)
+        # Re-dump to get clean state
+        xml = _dump_ui_xml(device)
+        nodes = _parse_ui_nodes(xml)
+    
+    return caption, nodes
+
+
 def _find_like_button_in_photo(
     nodes: List[Dict[str, Any]],
     photo_bounds: Tuple[int, int, int, int],
@@ -2092,6 +2210,7 @@ def _scan_profile_single_pass(
     last_capture_abs_top: Optional[int] = None
     last_capture_height: Optional[int] = None
     skip_photo_capture_once = False
+    consecutive_duplicate_skips = 0
 
     start_time = time.time()
 
@@ -2234,8 +2353,21 @@ def _scan_profile_single_pass(
                                             os.remove(crop_path)
                                         except Exception:
                                             pass
+                                    consecutive_duplicate_skips += 1
+                                    if consecutive_duplicate_skips >= 2:
+                                        _log("[SCROLL] consecutive duplicate photos; assuming end of profile.")
+                                        # Break out of the photo capture, will exit at end of loop
+                                        photo_bounds = None
+                                        break
                                 else:
+                                    consecutive_duplicate_skips = 0
                                     like_center = _bounds_center(like_abs) if like_abs else None
+                                    
+                                    # Extract caption if available
+                                    caption, nodes = _get_photo_caption(
+                                        device, width, height, nodes, photo_bounds
+                                    )
+                                    
                                     ui_map["photos"].append(
                                         {
                                             "content_desc": "photo",
@@ -2248,6 +2380,7 @@ def _scan_profile_single_pass(
                                             "hash": photo_hash,
                                             "abs_top": abs_top,
                                             "like_center": like_center,
+                                            "caption": caption,
                                         }
                                     )
                                     seen_photo_keys.add(key)
@@ -2255,9 +2388,10 @@ def _scan_profile_single_pass(
                                         seen_photo_hashes.append(photo_hash)
                                     last_capture_abs_top = abs_top
                                     last_capture_height = vb_h
+                                    caption_log = f" caption='{caption}'" if caption else ""
                                     _log(
                                         f"[PHOTO] captured abs_top={abs_top} abs_bounds={abs_bounds} "
-                                        f"like_abs={like_abs} like_center={like_center}"
+                                        f"like_abs={like_abs} like_center={like_center}{caption_log}"
                                     )
             banner_like = banner_like_initial
             if photo_bounds and vb_h < vb_w:

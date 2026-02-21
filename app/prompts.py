@@ -1,15 +1,24 @@
 import json
 from typing import Any, Dict
 
+# Banned words for AI clichés - add/remove as needed
+BANNED_WORDS = ["trouble", "mischief", "chaos", "ruin my life", "danger", "main character", "elite", "mob wife", "vibe"]
+
+def _banned_words_phrase() -> str:
+    """Returns the banned words formatted for prompt inclusion."""
+    return "(" + ", ".join(f"'{w}'" for w in BANNED_WORDS) + ")"
+
 def LLM1_VISUAL() -> str:
     """
     Visual-only prompt for LLM1: describe photos + infer visual traits.
     Images are provided in order: photo_1 ... photo_6.
     """
     return (
-        "You are analyzing cropped photos from a Hinge profile. "
-        "The images are provided in order: photo_1, photo_2, photo_3, photo_4, photo_5, photo_6.\n"
-        "If fewer than 6 images are provided, leave missing descriptions empty.\n\n"
+        "You are a lead scout for an elite, boutique dating agency vetting candidates for high-end matchmaking services. "
+        "Your professional reputation depends on brutal, diagnostic honesty. Average is a failure." \
+        "Do not weight for age. It is natural that a 20 something may score higher than a 50 something. All weighting must be objective and visual, i.e. 'good for a 50 year old' must be avoided."
+        "You are analyzing cropped photos provided in order: photo_1, photo_2, photo_3, photo_4, photo_5, photo_6 "
+        "to determine if the subject meets elite standards. If fewer than 6 images are provided, leave missing descriptions empty.\n\n"
         "Return exactly one JSON object:\n\n"
         "{\n"
         '  "photos": [\n'
@@ -51,6 +60,7 @@ def LLM1_VISUAL() -> str:
         "- Return only the JSON object, nothing else.\n"
         "- Base everything ONLY on the photos (no text or profile info).\n"
         "- If something is unclear, leave the field empty.\n"
+        "- Act as a scout vetting candidates for an exclusive campaign where average is failure. Your goal is diagnostic binning of visual assets.\n"
         "- Be brutally honest in assessments; do not use false positivity or exaggeration. If the subject has unattractive features (e.g., poor proportions, low symmetry, high body fat, unflattering angles), rate accordingly as Low or Very unattractive/morbidly obese. Avoid overly optimistic ratings unless features are clearly above average.\n\n"
         "Photo description rules:\n"
         "- Provide a detailed, visual summary of the main subject: clothing, pose, activity, background, "
@@ -77,9 +87,9 @@ def LLM1_VISUAL() -> str:
         '"Reasoning for attractiveness tier": Identify the primary physical constraints (e.g., rounded facial structure, prominent forehead, lack of bone definition). If these constraints are present, you are prohibited from selecting a tier above "Limited" or "Average." Justify why the subject failed to reach the next tier up. COMPLIMENTS ARE FORBIDDEN; list only the limiting factors.\n'
         '"Facial Proportion Balance": "Balanced/proportional", "Slightly unbalanced", "Noticeably unbalanced"\n'
         '"Grooming Effort Level": "Minimal/natural", "Moderate/casual", "High/polished", "Heavy/overdone"\n'
-        '"Presentation Red Flags": "None", "Poor lighting", "Blurry/low resolution", "Unflattering angle", "Heavy filters/face smoothing", "Too many distant shots", "Mirror selfie cluttered", "Messy background", "Only one clear solo photo", "Awkward cropping", "Overexposed/washed out", "Inconsistent appearance across photos"\n'
+        '"Presentation Red Flags": "None", "Poor lighting", "Blurry/low resolution", "Unflattering angle", "Heavy filters/face smoothing", "Too many distant shots", "Messy background", "Only one clear solo photo", "Awkward cropping", "Overexposed/washed out", "Inconsistent appearance across photos"\n'
         '"Visible Tattoo Level": "None visible", "Small/minimal", "Moderate", "High"\n'
-        '"Visible Piercing Level": "None visible", "Minimal", "Moderate", "High"\n'
+        '"Visible Piercing Level": "None visible", "Minimal", "Moderate", "High" - Note: If visible belly or nose piercings, piercing level must be at least moderate or higher. If 2+ earrings per ear, must be at least minimal or higher.\n'
         '"Short-Term / Hookup Orientation Signals": "None evident", "Low", "Moderate", "High"\n'
     )
 
@@ -152,31 +162,30 @@ def LLM3_LONG(extracted: Dict[str, Any]) -> str:
     extracted_json = json.dumps(extracted or {}, ensure_ascii=False, indent=2)
     return (
         "You are generating opening messages for Hinge.\n"
-        "These should be warm, natural, and genuinely curious questions — the kind of thing a normal, confident guy would send.\n"
-        "However, this is still a dating app and must be semi flirty. \n"
+        "These should be warm, natural, and genuinely curious questions.\n"
         "The goal is to start an easy conversation.\n\n"
         "Profile details:\n"
         f"{extracted_json}\n\n"
-        "Task: Generate exactly 15 DISTINCT opening messages as JSON.\n\n"
+        "Task: Generate exactly 5 DISTINCT opening messages as JSON.\n"
+        "Ensure high variety. For example, one safe, one bold, one niche, etc.\n\n"
         "Rules:\n"
-        "- Output JSON only, no extra text, ASCII characters only. No emojis, emdashes etc.\n"
+        "- Output JSON only, no extra text, ASCII characters only. No emojis, no em dashes.\n"
         "- Each opener must anchor to EXACTLY ONE profile element ID: prompt_1..prompt_3, photo_1..photo_6, poll_1_a|poll_1_b|poll_1_c.\n"
-        "- Every opener must be a simple question, light A/B choice, or charming/witty remark that is EASY to reply to.\n"
-        "- Vibe: sweet, curious, flirty\n"
-        "- Each opener must reference a concrete detail from the targeted element and would feel weird on another profile. However, don't overpersonalise to the point of being creepy - i.e. bringing up the specific sub part of London they live in or referencing their profession in places where it doesn't fit naturally\n"
-        "- Do NOT narrate the photo or prompt like a caption. Reference it naturally (GOOD: \"where was this?\" BAD: \"in photo 3\"). The text will appear just under the photo to the recipient. Both will be sent together. Act as if in natural conversation\n"
-        "- Avoid generic thirst or scripted pickup tropes (banned words include 'trouble', 'mischief', 'chaos', 'ruin my life', 'danger', 'main character', 'elite', etc.).\n"
+        "- Every opener must be a simple question, light A/B choice, or charming remark that is EASY to reply to.\n"
+        "- Do NOT narrate the photo or prompt like a caption. Reference it naturally.\n"
+        "- Do NOT narrate the photo or prompt like a caption (never say 'photo 5' or 'first prompt'). The photo, prompt or poll answer will be linked via Hinge UI\n"
+        f"- Avoid generic thirst or scripted pickup tropes. Banned words: {_banned_words_phrase()}.\n"
         "- Messages should feel human, relaxed, and effortless.\n"
         "- Keep each opener under 15 words.\n"
-        "- Use question marks. Don't use full stops. Messages should feel somewhat human rather than AI generated perfection. \n\n"
+        "- Use question marks. Don't use full stops. Messages should feel somewhat human rather than AI generated perfection.\n\n"
         "Output format (JSON only):\n"
         "{\n"
         '  "openers": [\n'
         "    {\n"
-        '      "text": \"...\",\n'
-        '      "main_target_type": \"prompt|photo|poll\",\n'
-        '      "main_target_id": \"prompt_1\",\n'
-        '      "hook_basis": \"short internal note on what you targeted\"\n'
+        '      "text": "...",\n'
+        '      "main_target_type": "prompt|photo|poll",\n'
+        '      "main_target_id": "prompt_1",\n'
+        '      "hook_basis": "short internal note on what you targeted"\n'
         "    }\n"
         "  ]\n"
         "}\n"
@@ -188,138 +197,209 @@ def LLM3_SHORT(extracted: Dict[str, Any]) -> str:
     extracted_json = json.dumps(extracted or {}, ensure_ascii=False, indent=2)
     return (
         "You are generating opening messages for Hinge.\n"
-        "The tone should be bold, playful, flirty.\n"
-
+        "The tone should be bold, playful, flirty.\n\n"
         "Profile details:\n"
         f"{extracted_json}\n\n"
-
-        "Task: Generate exactly 15 DISTINCT opening messages as JSON.\n\n"
-
+        "Task: Generate exactly 5 DISTINCT opening messages as JSON.\n"
+        "Ensure high variety. For example, one direct, one teasing, one niche observation.\n\n"
         "Rules:\n"
-        "- Output JSON only, ASCII characters only. No emojis, no emdashes.\n"
+        "- Output JSON only, ASCII characters only. No emojis, no em dashes.\n"
         "- Each opener must anchor to EXACTLY ONE profile element ID: prompt_1..prompt_3, photo_1..photo_6, poll_1_a|poll_1_b|poll_1_c.\n"
-        "- Sexual tension is allowed, but it must feel playful and confident, not needy or transactional.\n"
-        "- Every opener must create an obvious response, either as a question or easy to respond to statement.\n"
-        "- The line must invite an easy reply to stimulate conversation. Empty 1 line statements or compliments with no response paths are worthless.\n"
-        "- Avoid generic thirst or scripted pickup tropes (banned words include 'trouble', 'mischief', 'chaos', 'ruin my life', 'danger', 'main character', 'elite', etc.).\n"
-        "- Each opener must reference a concrete detail from the targeted element and would feel weird on another profile. However, don't overpersonalise to the point of being creepy - i.e. bringing up the specific sub part of London they live in or referencing their profession in places where it doesn't fit naturally\n"
         "- Do NOT narrate the photo or prompt like a caption (never say 'photo 5' or 'first prompt'). The photo, prompt or poll answer will be linked via Hinge UI\n"
+        "- Sexual tension is allowed, but it must feel playful and confident, not needy or transactional.\n"
+        "- Every opener must create an obvious response.\n"
+        f"- Avoid generic thirst or scripted pickup tropes. Banned words: {_banned_words_phrase()}.\n"
+        "- Do NOT narrate the photo or prompt like a caption.\n"
         "- Keep each opener under 15 words.\n"
-        "- Use question marks. Don't use full stops. Messages should feel somewhat human rather than AI generated perfection. \n\n"
-
+        "- Use question marks. Don't use full stops.\n\n"
         "Output format (JSON only):\n"
         "{\n"
-        '  \"openers\": [\n'
+        '  "openers": [\n'
         "    {\n"
-        '      \"text\": \"...\",\n'
-        '      \"main_target_type\": \"prompt|photo|poll\",\n'
-        '      \"main_target_id\": \"prompt_1\",\n'
-        '      \"hook_basis\": \"short internal note on what you targeted\"\n'
+        '      "text": "...",\n'
+        '      "main_target_type": "prompt|photo|poll",\n'
+        '      "main_target_id": "prompt_1",\n'
+        '      "hook_basis": "short internal note on what you targeted"\n'
         "    }\n"
         "  ]\n"
         "}\n"
     )
 
 
-def LLM4_LONG(openers_json: Dict[str, Any]) -> str:
+def LLM3_5_CRITIQUE(openers_json: Dict[str, Any], extracted: Dict[str, Any]) -> str:
+    extracted_json = json.dumps(extracted or {}, ensure_ascii=False, indent=2)
     openers_str = json.dumps(openers_json or {}, ensure_ascii=False, indent=2)
     return (
-        "You are selecting the best Hinge openers from a provided list.\n"
-        "Rank the TOP 3 openers in order (1 is best).\n"
-        "The user has selected this profile for a relationship. Focus on being charming, funny and unique while remaining flirty.\n"
-        "Pick the ones that are the best, least cringy, and most importantly most likely to get a reply. Be decisive.\n"
-        "Prefer openers that produce playful back-and-forth.\n"
-        "Avoid choosing anything that sounds like a generic pickup line even if bold.\n"
-        "Important: Do not pick prompts that seem like cliche LLMisms.\n"
-        "Do not invent new lines; only rank from the provided list.\n"
-        "Return exactly 3 ranked items with ranks 1, 2, 3.\n"
-        "Each ranked item's text must exactly match an opener from the list (no edits).\n\n"
-        "Include in rationale why rank 1 was the best or why 2/3 were good but not as good.\n"
-        "Also include top-level chosen_* fields that exactly mirror rank 1.\n\n"
+        "You are the woman described in the profile details below. You are smart, attractive, and have a low tolerance for 'dating app energy'\n"
+        "Your task: Audit these 5 openers from your perspective. Be brutally honest. If a line gives you 'the ick' or feels like a bot trying to 'hack' your interests, say so.\n\n"
+        "Is it too 'wordy'? Does it feel like a template? \n"
+        "Does it sound like a guy trying too hard to be 'charming'? Do you have no idea how to reply to it?\n"
+        "Is he clearly just repeating my prompt back to me without adding anything new?\n"
+        "Is he asking a logical question that feels like a chore to answer?\n"
+        "Has he clearly just stuck my profile in ChatGPT to come up with some lines. He uses perfect grammar, full stops, the most generic lines in the world, or quirky 'AI-clichés' that no human would use (liability, mischief, vibe, dangerous, etc.).\n"
+        "Is he trying too hard to be witty or charming in a way that feels scripted.\n\n"
+        "Rules:\n"
+        "- Use the profile details to judge if a hook is actually clever or just generic.\n"
+        "- Do NOT pick a winner. Just describe the cringe points for each. Do not give a replacement line, but a better direction to go in is allowed\n"
+        "- Output JSON only\n\n"
+        "Profile details:\n"
+        f"{extracted_json}\n\n"
         "Openers JSON:\n"
         f"{openers_str}\n\n"
-        "Output JSON only:\n"
+        "Output format (JSON only):\n"
         "{\n"
-        '  "ranked": [\n'
+        '  "critiques": [\n'
         "    {\n"
-        '      "rank": 1,\n'
-        '      "text": "",\n'
-        '      "main_target_type": "prompt|photo|poll",\n'
-        '      "main_target_id": "",\n'
-        '      "rationale": ""\n'
-        "    },\n"
-        "    {\n"
-        '      "rank": 2,\n'
-        '      "text": "",\n'
-        '      "main_target_type": "prompt|photo|poll",\n'
-        '      "main_target_id": "",\n'
-        '      "rationale": ""\n'
-        "    },\n"
-        "    {\n"
-        '      "rank": 3,\n'
-        '      "text": "",\n'
-        '      "main_target_type": "prompt|photo|poll",\n'
-        '      "main_target_id": "",\n'
-        '      "rationale": ""\n'
+        '      "id": "1",\n'
+        '      "cringe_points": "..."\n'
         "    }\n"
-        "  ],\n"
-        '  "chosen_text": "",\n'
-        '  "main_target_type": "prompt|photo|poll",\n'
-        '  "main_target_id": "",\n'
-        '  "rationale": ""\n'
+        "  ]\n"
         "}\n"
     )
 
 
-def LLM4_SHORT(openers_json: Dict[str, Any]) -> str:
+def LLM4_LONG(openers_json: Dict[str, Any], critiques_json: Dict[str, Any], extracted: Dict[str, Any]) -> str:
+    extracted_json = json.dumps(extracted or {}, ensure_ascii=False, indent=2)
     openers_str = json.dumps(openers_json or {}, ensure_ascii=False, indent=2)
+    critiques_str = json.dumps(critiques_json or {}, ensure_ascii=False, indent=2)
+    
     return (
-        "You are selecting the best Hinge openers from a provided list.\n"
-        "Rank the TOP 3 openers in order (1 is best).\n"
-        "The best openers are the ones with the most game: sexy, witty, confident, and reply-provoking.\n\n"
-
-        "Pick the ones that are:\n"
-        "- Most likely to get a fast playful comeback\n"
-        "- Not generic, not cringe, not try-hard\n\n"
-
-        "Do not invent new lines; only rank from the provided list.\n"
-        "Return exactly 3 ranked items with ranks 1, 2, 3.\n"
-        "Each ranked item's text must exactly match an opener from the list (no edits).\n\n"
-        "Include in rationale why rank 1 was the best or why 2/3 were good but not as good.\n"
-        "Also include top-level chosen_* fields that exactly mirror rank 1.\n\n"
-
-        "Openers JSON:\n"
+        "You are an Elite Female Wingman. You are high-status, savvy, and you want your client to land a date. "
+        "You have the 'Ick Report'. Your mission is to take the original hooks and pivot them so the recipient is physically incapable of leaving them on read.\n\n"
+        "Tactical Instructions:\n"
+        "1. Fix the Icks: Take the critique from 3.5 and strip away the 'bot-smell' or 'try-hard' energy.\n"
+        "2. Optimize for Reply-Rate: Make the lines punchier and lower-friction. A reply should be a reflex, not a chore.\n"
+        "3. Score each line: A 10/10 is a line that would bypass even the most cynical woman's defenses.\n\n"
+        "Social Strategy Rules:\n"
+        "- Capitalization: Standard Sentence Case.\n"
+        "- Terminal Punctuation: NEVER end with a full stop (period). It feels cold. Use question marks or end on the word. Don't use rare punctuation like hyphens, dashes or colons\n"
+        "- No 'AI-filler': Delete 'So,', 'I noticed,', or 'It seems like'. Start with the hook.\n"
+        f"- No AI clichés. Banned words: {_banned_words_phrase()}\n"
+        "- Max 15 words. Brevity is confidence.\n"
+        "Profile details:\n"
+        f"{extracted_json}\n\n"
+        "Original Openers:\n"
         f"{openers_str}\n\n"
-
-        "Output JSON only:\n"
+        "Critiques:\n"
+        f"{critiques_str}\n\n"
+        "Rules:\n"
+        "- Output JSON only, no emojis, no em dashes.\n"
+        "- Rewrite ALL 5 lines, even if some are weak.\n"
+        "- Keep main_target_type, main_target_id, and hook_basis from the original opener.\n"
+        "- Do NOT pick a winner - just output all 5 improved lines with scores.\n\n"
+        "Output format (JSON only):\n"
         "{\n"
-        '  "ranked": [\n'
+        '  "rewritten_lines": [\n'
         "    {\n"
-        '      "rank": 1,\n'
-        '      "text": "",\n'
+        '      "id": "1",\n'
+        '      "text": "...",\n'
+        '      "score": 7,\n'
+        '      "critique_integration": "Short note on how you fixed the cringe identified by 3.5",\n'
         '      "main_target_type": "prompt|photo|poll",\n'
-        '      "main_target_id": "",\n'
-        '      "rationale": ""\n'
-        "    },\n"
-        "    {\n"
-        '      "rank": 2,\n'
-        '      "text": "",\n'
-        '      "main_target_type": "prompt|photo|poll",\n'
-        '      "main_target_id": "",\n'
-        '      "rationale": ""\n'
-        "    },\n"
-        "    {\n"
-        '      "rank": 3,\n'
-        '      "text": "",\n'
-        '      "main_target_type": "prompt|photo|poll",\n'
-        '      "main_target_id": "",\n'
-        '      "rationale": ""\n'
+        '      "main_target_id": "prompt_1",\n'
+        '      "hook_basis": "..."\n'
         "    }\n"
-        "  ],\n"
-        '  "chosen_text": "",\n'
-        '  "main_target_type": "prompt|photo|poll",\n'
-        '  "main_target_id": "",\n'
-        '  "rationale": ""\n'
+        "  ]\n"
+        "}\n"
+    )
+
+
+def LLM4_SHORT(openers_json: Dict[str, Any], critiques_json: Dict[str, Any], extracted: Dict[str, Any]) -> str:
+    extracted_json = json.dumps(extracted or {}, ensure_ascii=False, indent=2)
+    openers_str = json.dumps(openers_json or {}, ensure_ascii=False, indent=2)
+    critiques_str = json.dumps(critiques_json or {}, ensure_ascii=False, indent=2)
+    
+    return (
+        "You are the Zero-Filter Female Confidante. You are the 'bad influence' friend who knows exactly how to spark sexual tension without sounding like a creep. \n"
+        "Your only mission is to send an opening line so good that it'll get your friend laid \n"
+        "You have the 'Ick Report'. Your mission is to take the original hooks and pivot them so the recipient is physically incapable of leaving them on read.\n\n"
+        "The Short-Goal Philosophy:\n"
+        "1. High Tension, Low Effort: If a line looks like it took more than three seconds to think of, it is a fail.\n"
+        "2. Friction is Good: A cheeky accusation or a playful tease is better than a compliment.\n"
+        "3. Delete the Bot: Remove every single polite word. No 'Hey', no 'How are you', no 'Interesting'.\n\n"
+        "Social Strategy Rules:\n"
+        "- Capitalization: Standard Sentence Case.\n"
+        "- Terminal Punctuation: NEVER end with a full stop (period). It feels cold. Use question marks or end on the word. Don't use rare punctuation like hyphens, dashes or colons\n"
+        "- No 'AI-filler': Delete 'So,', 'I noticed,', or 'It seems like'. Start with the hook.\n"
+        f"- No AI clichés. Banned words: {_banned_words_phrase()}\n"
+        "- Max 15 words. Brevity is confidence.\n"
+        "Profile details:\n"
+        f"{extracted_json}\n\n"
+        "Original Openers:\n"
+        f"{openers_str}\n\n"
+        "Critiques:\n"
+        f"{critiques_str}\n\n"
+        "Rules:\n"
+        "- Output JSON only, no emojis, no em dashes.\n"
+        "- Rewrite ALL 5 lines, even if some are weak.\n"
+        "- Keep main_target_type, main_target_id, and hook_basis from the original opener.\n"
+        "- Do NOT pick a winner - just output all 5 improved lines with scores.\n\n"
+        "Output format (JSON only):\n"
+        "{\n"
+        '  "rewritten_lines": [\n'
+        "    {\n"
+        '      "id": "1",\n'
+        '      "text": "...",\n'
+        '      "score": 7,\n'
+        '      "critique_integration": "Short note on how you fixed the cringe identified by 3.5",\n'
+        '      "main_target_type": "prompt|photo|poll",\n'
+        '      "main_target_id": "prompt_1",\n'
+        '      "hook_basis": "..."\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+    )
+
+
+def LLM4_5_CRITIQUE(llm4_result: Dict[str, Any], extracted: Dict[str, Any], variant: str) -> str:
+    """
+    LLM4.5: Pick the best opener from the 5 improved lines, or fail all if none are good enough.
+    variant is either "short" or "long".
+    """
+    extracted_json = json.dumps(extracted or {}, ensure_ascii=False, indent=2)
+    llm4_str = json.dumps(llm4_result or {}, ensure_ascii=False, indent=2)
+    
+    variant_context = ""
+    if variant == "short":
+        variant_context = "This is a SHORT-TERM relationship opener. The tone should be playful, flirty, and create sexual tension."
+    else:
+        variant_context = "This is a LONG-TERM relationship opener. The tone should be warm, genuine, and conversation-starting."
+    
+    return (
+        "You are the woman described in the profile details below. You are smart, attractive, and have a low tolerance for 'dating app energy'.\n"
+        "Your mission: Audit these 5 final candidates and decide which one (if any) actually earns a reply. Be brutally honest. "
+        "If a line still gives you 'the ick', feels like a bot trying to 'hack' your interests, or sounds like a guy trying too hard to be clever, reject it.\n\n"
+        "Unlike the earlier cynical audit, you are allowed to be positive if a line actually hits the mark, but your standards remain sky-high. "
+        "Only pick the absolute best one if it is genuinely good enough to send. If none of them make the cut, fail them all.\n\n"
+        f"Context: {variant_context}\n\n"
+        "Profile details:\n"
+        f"{extracted_json}\n\n"
+        "LLM4 Output (5 improved openers):\n"
+        f"{llm4_str}\n\n"
+        "Your task:\n"
+        "1. Evaluate each of the 5 lines for quality, naturalness, and reply-potential\n"
+        "2. Pick the best one that will actually get a response\n"
+        "3. If NONE of the lines are good enough, fail them all\n\n"
+        "Quality criteria:\n"
+        "- Does it sound like a real human wrote it?\n"
+        "- Is it easy to reply to?\n"
+        "- Is it free of AI clichés (e.g., 'trouble', 'mischief', 'chaos', 'elite', 'dangerous', etc.)?\n"
+        "- Does it actually reference something specific from the profile?\n"
+        "- Is it short and sweet - under 15 words, ideally under 10?\n\n"
+        "Rules:\n"
+        "- Output JSON only, no emojis, no em dashes.\n"
+        "- If PICK, set action='PICK' and provide the chosen line's details.\n"
+        "- If FAIL, set action='FAIL' and explain why all lines were rejected.\n"
+        "- Be strict. Only pick a line if it's genuinely good enough to send.\n\n"
+        "Output format (JSON only):\n"
+        "{\n"
+        '  "action": "PICK" | "FAIL",\n'
+        '  "reason": "Explain your decision",\n'
+        '  "chosen_text": "...",  // Only if action="PICK"\n'
+        '  "chosen_id": "1",      // Only if action="PICK" - the id of the chosen line\n'
+        '  "main_target_type": "prompt|photo|poll",  // Only if action="PICK"\n'
+        '  "main_target_id": "prompt_1",             // Only if action="PICK"\n'
+        '  "hook_basis": "..."                       // Only if action="PICK"\n'
         "}\n"
     )
 

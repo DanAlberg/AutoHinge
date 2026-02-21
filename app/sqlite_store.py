@@ -209,6 +209,11 @@ def init_db(db_path: Optional[str] = None) -> None:
             "verdict TEXT",
             "matched INTEGER DEFAULT 0",
             "match_time TEXT",
+            # New columns for critique pipeline
+            "opening_critiques_json TEXT",
+            "humanity_score INTEGER",
+            "llm4_action TEXT",
+            "llm4_fail_reason TEXT",
         ]
         for col in extra_cols:
             try:
@@ -492,6 +497,66 @@ def update_profile_match(
         cur.execute(
             "UPDATE profiles SET matched = ?, match_time = ? WHERE id = ?",
             (matched_val, match_time, int(profile_id))
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def update_profile_critique_data(
+    profile_id: int,
+    critiques_json: Dict[str, Any],
+    llm4_result: Dict[str, Any],
+    db_path: Optional[str] = None
+) -> None:
+    """
+    Persist critique pipeline data:
+    - opening_critiques_json: LLM3.5 critique results
+    - humanity_score: score of the chosen line (1-10)
+    - llm4_action: PASS or FAIL
+    - llm4_fail_reason: reason if FAIL
+    """
+    try:
+        import json
+        critiques_text = json.dumps(critiques_json or {}, ensure_ascii=False)
+    except Exception:
+        critiques_text = "{}"
+    
+    llm4_action = ""
+    llm4_fail_reason = ""
+    humanity_score = None
+    
+    if isinstance(llm4_result, dict):
+        llm4_action = (llm4_result.get("action") or "").strip().upper()
+        llm4_fail_reason = (llm4_result.get("reason") or "").strip()
+        
+        # Extract humanity score from the chosen line
+        rewritten_lines = llm4_result.get("rewritten_lines")
+        chosen_text = (llm4_result.get("chosen_text") or "").strip()
+        if isinstance(rewritten_lines, list):
+            for line in rewritten_lines:
+                if not isinstance(line, dict):
+                    continue
+                line_text = (line.get("text") or "").strip()
+                if line_text == chosen_text:
+                    try:
+                        humanity_score = int(line.get("score") or 0)
+                    except Exception:
+                        pass
+                    break
+    
+    db_path = db_path or get_db_path()
+    con = sqlite3.connect(db_path)
+    try:
+        cur = con.cursor()
+        cur.execute(
+            """UPDATE profiles SET 
+               opening_critiques_json = ?, 
+               humanity_score = ?, 
+               llm4_action = ?, 
+               llm4_fail_reason = ? 
+               WHERE id = ?""",
+            (critiques_text, humanity_score, llm4_action, llm4_fail_reason, int(profile_id))
         )
         con.commit()
     finally:

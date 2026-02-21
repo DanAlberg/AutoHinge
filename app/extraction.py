@@ -386,12 +386,14 @@ def _build_extracted_profile(
             if p.get("id") == pid:
                 photo_meta = p
                 break
+        caption = (photo_meta or {}).get("caption") if photo_meta else None
         photo_entries.append(
             {
                 "id": pid,
                 "description": photo_desc_map.get(pid, ""),
                 "source_file": (photo_meta or {}).get("crop_path", ""),
                 "page_half": "",
+                "caption": caption,
             }
         )
 

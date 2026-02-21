@@ -18,7 +18,7 @@ import config  # ensure .env is loaded early
 
 from helper_functions import ensure_adb_running, connect_device, get_screen_resolution, open_hinge
 from extraction import run_llm1_visual, run_profile_eval_llm, _build_extracted_profile
-from openers import run_llm3_long, run_llm3_short, run_llm4_long, run_llm4_short, run_llm5_safety
+from openers import run_llm3_long, run_llm3_short, run_llm3_5_critique, run_llm4_long, run_llm4_short, run_llm4_5_critique, run_llm5_safety
 from llm_client import LLMError
 from profile_utils import _get_core, _norm_value
 from runtime import _is_run_json_enabled, _log, set_verbose
@@ -29,6 +29,7 @@ from sqlite_store import (
     update_profile_opening_messages_json,
     update_profile_opening_pick,
     update_profile_verdict,
+    update_profile_critique_data,
 )
 from ui_scan import (
     _bounds_visible,
@@ -61,19 +62,65 @@ from ui_scan import (
 )
 
 
+def _is_vscode_active() -> bool:
+    """
+    Check if VSCode is the foreground window on Windows.
+    Returns False on non-Windows platforms (safe fallback).
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        if not hwnd:
+            return False
+        length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+        if length == 0:
+            return False
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        ctypes.windll.user32.GetWindowTextW(hwnd, buffer, length + 1)
+        title = buffer.value.lower()
+        # VSCode window titles typically contain "Visual Studio Code"
+        return "visual studio code" in title
+    except Exception:
+        return False
+
+
+def _beep(times: int = 1) -> None:
+    """
+    Play pleasant system notification sounds using winsound on Windows.
+    Safe on non-Windows (does nothing).
+    """
+    if os.name != "nt":
+        return
+    try:
+        import winsound
+        for _ in range(times):
+            winsound.MessageBeep(0x40)  # MB_ICONASTERISK - pleasant "asterisk" sound
+            if times > 1:
+                time.sleep(0.15)  # Small delay between beeps
+    except Exception:
+        pass
+
+
 def _alert_user(message: str) -> None:
     """
-    Trigger a system alert (beep + popup on Windows) to grab user attention.
-    Safe to run on non-Windows (will just beep).
+    Trigger an audible alert (3 beeps) to grab user attention.
+    Used for safety alerts like LLM5 interventions.
+    Safe on non-Windows (does nothing).
     """
-    print("\a\a\a")  # Console beep
-    if os.name == "nt":
-        try:
-            import ctypes
-            # MB_ICONWARNING (0x30) | MB_TOPMOST (0x40000)
-            ctypes.windll.user32.MessageBoxW(0, message, "AutoHinge Safety Alert", 0x00040030)
-        except Exception:
-            pass
+    _beep(3)
+
+
+def _alert_user_if_needed(message: str) -> None:
+    """
+    Alert user with beeps: 1 if VSCode is active, 3 if not.
+    Safe on non-Windows (does nothing).
+    """
+    if _is_vscode_active():
+        _beep(1)  # VSCode active - user can see terminal
+    else:
+        _beep(3)  # VSCode not active - need more attention
 
 
 def _force_gemini_env() -> None:
@@ -168,6 +215,7 @@ def _parse_args() -> argparse.Namespace:
 def _confirm_action(action_label: str, unrestricted: bool, timings: Optional[Dict[str, Any]] = None) -> bool:
     if unrestricted:
         return True
+    _alert_user_if_needed(f"Action Required: Confirm {action_label}")
     try:
         t0 = time.perf_counter()
         resp = input(f"Confirm {action_label}? (y/N): ").strip().lower()
@@ -251,13 +299,46 @@ def _default_opener_index(openers: List[Dict[str, Any]], llm4_result: Dict[str, 
     return 0 if openers else None
 
 
+def _extract_rewritten_list(llm4_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Extract rewritten lines from LLM4 result."""
+    if not isinstance(llm4_result, dict):
+        return []
+    
+    # Check for rewritten_lines (the correct key from LLM4 output)
+    rewritten = llm4_result.get("rewritten_lines")
+    if isinstance(rewritten, list):
+        cleaned: List[Dict[str, Any]] = []
+        for r in rewritten:
+            if not isinstance(r, dict):
+                continue
+            text = (r.get("text") or "").strip()
+            if not text:
+                continue
+            cleaned.append({
+                "text": text,
+                "score": r.get("score"),
+                "main_target_type": (r.get("main_target_type") or "").strip(),
+                "main_target_id": (r.get("main_target_id") or "").strip(),
+                "hook_basis": (r.get("hook_basis") or "").strip(),
+            })
+        return cleaned
+    
+    return []
+
+
 def _choose_opening_message(
     llm3_result: Dict[str, Any],
     llm4_result: Dict[str, Any],
     unrestricted: bool,
     timings: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], bool, bool]:
-    openers = _extract_openers_list(llm3_result)
+    # Prefer rewritten lines from LLM4 (post-critique), fallback to original openers from LLM3
+    rewritten = _extract_rewritten_list(llm4_result)
+    original_openers = _extract_openers_list(llm3_result)
+    
+    # Use rewritten lines if available, otherwise use original openers
+    openers = rewritten if rewritten else original_openers
+    
     updated = dict(llm4_result or {})
     idx = _default_opener_index(openers, updated)
     if idx is not None:
@@ -270,6 +351,7 @@ def _choose_opening_message(
     if unrestricted:
         return updated, True, False
 
+    _alert_user_if_needed("Action Required: Review opening message")
     while True:
         chosen_text = (updated.get("chosen_text") or "").strip()
         chosen_target = (updated.get("main_target_id") or "").strip()
@@ -699,7 +781,9 @@ def _run_single_profile(
             "manual_override": "",
             "llm3_variant": "",
             "llm3_result": {},
+            "llm3_5_result": {},
             "llm4_result": {},
+            "llm4_5_result": {},
             "llm5_result": {},
             "target_action": {},
         }
@@ -852,6 +936,7 @@ def _run_single_profile(
                     )
                 )
                 if not args.unrestricted:
+                    _alert_user_if_needed("Action Required: Review gate decision")
                     t0 = time.perf_counter()
                     override = input("Override decision? (long/short/reject, blank to keep): ").strip().lower()
                     timings["input_wait_s"] = timings.get("input_wait_s", 0.0) + (time.perf_counter() - t0)
@@ -889,6 +974,7 @@ def _run_single_profile(
                 _write_run_log(out_path, log_state)
             if llm3_variant:
                 while True:
+                    # Step 1: Generate 5 openers
                     t0 = time.perf_counter()
                     if llm3_variant == "short":
                         llm3_result = run_llm3_short(extracted)
@@ -901,18 +987,67 @@ def _run_single_profile(
                     if not llm3_result:
                         llm4_result = {}
                         break
+                    
+                    # Step 2: Cynical critique
+                    t0 = time.perf_counter()
+                    llm3_5_result = run_llm3_5_critique(llm3_result, extracted)
+                    timings["llm3_5_s"] = round(time.perf_counter() - t0, 2)
+                    if log_state:
+                        log_state["llm3_5_result"] = llm3_5_result
+                        _write_run_log(out_path, log_state)
+                    
+                    # Step 3: Rewrite + score + gate
                     t0 = time.perf_counter()
                     if llm3_variant == "short":
-                        llm4_result = run_llm4_short(llm3_result)
+                        llm4_result = run_llm4_short(llm3_result, llm3_5_result, extracted)
                     else:
-                        llm4_result = run_llm4_long(llm3_result)
+                        llm4_result = run_llm4_long(llm3_result, llm3_5_result, extracted)
                     timings["llm4_s"] = round(time.perf_counter() - t0, 2)
                     if log_state:
                         log_state["llm4_result"] = llm4_result
                         _write_run_log(out_path, log_state)
-                    llm4_result, send_approved, redo_requested = _choose_opening_message(
-                        llm3_result, llm4_result, args.unrestricted, timings
-                    )
+                    
+                    # Step 3.5: LLM4.5 picks best opener or fails all
+                    t0 = time.perf_counter()
+                    llm4_5_result = run_llm4_5_critique(llm4_result, extracted, llm3_variant)
+                    timings["llm4_5_s"] = round(time.perf_counter() - t0, 2)
+                    if log_state:
+                        log_state["llm4_5_result"] = llm4_5_result
+                        _write_run_log(out_path, log_state)
+                    
+                    # Handle LLM4.5 decision
+                    if llm4_5_result.get("action") == "FAIL":
+                        fail_reason = llm4_5_result.get("reason", "All lines rejected")
+                        print(f"[LLM4.5] FAIL: {fail_reason}")
+                        _alert_user(f"All Messages Rejected\n\n{fail_reason}\n\nFalling back to manual mode.")
+                        # Fall back to manual mode - user can override or skip
+                        llm4_result, send_approved, redo_requested = _choose_opening_message(
+                            {}, {}, unrestricted=False, timings=timings
+                        )
+                    elif llm4_5_result.get("action") == "PICK":
+                        # LLM4.5 picked a winner
+                        chosen_text = (llm4_5_result.get("chosen_text") or "").strip()
+                        print(f"[LLM4.5] PICK: {llm4_5_result.get('reason', '')}")
+                        print(f"[LLM4.5] Chosen: \"{chosen_text}\"")
+                        # Populate llm4_result with the chosen line for downstream flow
+                        llm4_result["chosen_text"] = chosen_text
+                        llm4_result["main_target_type"] = llm4_5_result.get("main_target_type", "")
+                        llm4_result["main_target_id"] = llm4_5_result.get("main_target_id", "")
+                        llm4_result["hook_basis"] = llm4_5_result.get("hook_basis", "")
+                        if log_state:
+                            log_state["llm4_result"] = llm4_result
+                            _write_run_log(out_path, log_state)
+                        # Proceed to user confirmation
+                        llm4_result, send_approved, redo_requested = _choose_opening_message(
+                            llm3_result, llm4_result, args.unrestricted, timings
+                        )
+                    else:
+                        # Unexpected action - fall back to manual
+                        print(f"[LLM4.5] Unexpected action: {llm4_5_result.get('action')}")
+                        llm4_result, send_approved, redo_requested = _choose_opening_message(
+                            llm3_result, llm4_result, args.unrestricted, timings
+                        )
+                    
                     if log_state:
                         log_state["llm4_result"] = llm4_result
                         _write_run_log(out_path, log_state)
@@ -1388,7 +1523,7 @@ def _run_single_profile(
         f"effective_s={timings.get('effective_elapsed_s')}",
         f"input_wait_s={timings.get('input_wait_s')}",
     ]
-    for key in ("scan_s", "llm1_s", "llm2_s", "llm3_s", "llm4_s", "llm5_s"):
+    for key in ("scan_s", "llm1_s", "llm2_s", "llm3_s", "llm3_5_s", "llm4_s", "llm4_5_s", "llm5_s"):
         if key in timings:
             parts.append(f"{key}={timings.get(key)}")
     print("[TIMINGS] " + " ".join(parts))
