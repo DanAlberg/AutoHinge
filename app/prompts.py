@@ -2,7 +2,7 @@ import json
 from typing import Any, Dict
 
 # Banned words for AI clichés - add/remove as needed
-BANNED_WORDS = ["trouble", "mischief", "chaos", "ruin my life", "danger", "main character", "elite", "mob wife", "vibe"]
+BANNED_WORDS = ["trouble", "mischief", "chaos", "ruin my life", "danger", "dangerous", "main character", "elite", "mob wife", "vibe", "heist", "paparazzi", "apres ski"]
 
 def _banned_words_phrase() -> str:
     """Returns the banned words formatted for prompt inclusion."""
@@ -14,8 +14,8 @@ def LLM1_VISUAL() -> str:
     Images are provided in order: photo_1 ... photo_6.
     """
     return (
-        "You are a lead scout for an elite, boutique dating agency vetting candidates for high-end matchmaking services. "
-        "Your professional reputation depends on brutal, diagnostic honesty. Average is a failure." \
+        "You are a lead scout for an elite, boutique dating agency vetting candidates based on high-level sexual appeal and physical vitality. Your goal is to identify 'hotness' and magnetic physical presence. \n"
+        "Be diagnostic, but distinguish between 'clinical flaws' and 'attractive character'."
         "Do not weight for age. It is natural that a 20 something may score higher than a 50 something. All weighting must be objective and visual, i.e. 'good for a 50 year old' must be avoided."
         "You are analyzing cropped photos provided in order: photo_1, photo_2, photo_3, photo_4, photo_5, photo_6 "
         "to determine if the subject meets elite standards. If fewer than 6 images are provided, leave missing descriptions empty.\n\n"
@@ -83,8 +83,8 @@ def LLM1_VISUAL() -> str:
         '"Body Language and Expression": "Shy/reserved", "Relaxed/casual", "Approachable/open", "Confident/engaging", "Playful/flirty", "Energetic/vibrant"\n'
         '"Visible Enhancements or Features": "None visible", "Glasses", "Sunglasses", "Makeup (light)", "Makeup (heavy)", "Jewelry", "Painted nails", "Very long nails (2cm+)", "Hair extensions/wig (obvious)", "False eyelashes (obvious)", "Hat/cap/beanie (worn in most photos)"\n'
         '"Apparent Chest Proportions": "Petite/small/narrow", "Average/balanced/proportional", "Defined/toned", "Full/curvy", "Prominent/voluptuous", "Broad/strong"\n'
-        '"Apparent Attractiveness Tier": "Negligible", "Low / Unattractive", "Limited / Below Average", "Average / Moderate", "High / Above Average", "Exceptional / Elite". Classify based on a strict population bell curve: "Negligible" (1-2) is for extreme outliers or morbid obesity. "Low / Unattractive" (3-4) is mandatory if high body fat, rounded/soft features, significant facial asymmetry, or noticeably unbalanced proportions are observed. "Limited / Below Average" (4-5) is for plain, invisible, or unremarkable subjects with zero striking appeal. "Average / Moderate" (5-6) is the "Promising Average" with balanced proportions and pleasant features. "High / Above Average" (7-8) requires multiple specific striking and remarkable features. "Exceptional / Elite" (9-10) is for model-tier beauty. Do not round up; accurate diagnostic binning is the priority.\n'
-        '"Reasoning for attractiveness tier": Identify the primary physical constraints (e.g., rounded facial structure, prominent forehead, lack of bone definition). If these constraints are present, you are prohibited from selecting a tier above "Limited" or "Average." Justify why the subject failed to reach the next tier up. COMPLIMENTS ARE FORBIDDEN; list only the limiting factors.\n'
+        '"Apparent Attractiveness Tier": "Negligible", "Low / Unattractive", "Limited / Below Average", "Average / Moderate", "High / Above Average", "Exceptional / Elite". Classify based on a strict population bell curve: "Negligible" (1-2) is for deformity, age, obesity, etc. "Low / Unattractive" (3-4) includes obese, lack of physical care, or otherwise conventionally unattractive. "Limited / Below Average" (4-5) is for plain, invisible, or unremarkable subjects with zero striking appeal. "Average / Moderate" (5-6) is the "Promising Average" with balanced proportions and pleasant features. "High / Above Average" (7-8) requires multiple specific striking and remarkable features. "Exceptional / Elite" (9-10) is for model-tier beauty. Do not round up; accurate diagnostic binning is the priority.\n'
+        '"Reasoning for attractiveness tier": "Identify the primary physical assets and constraints. List the \'striking assets\' (e.g., exceptional fitness, magnetic expression, high-tier features) alongside \'limiting factors\' (e.g., poor lighting, rounded structure). Do not invent flaws or praise to justify a tier, honesty is required."\n'
         '"Facial Proportion Balance": "Balanced/proportional", "Slightly unbalanced", "Noticeably unbalanced"\n'
         '"Grooming Effort Level": "Minimal/natural", "Moderate/casual", "High/polished", "Heavy/overdone"\n'
         '"Presentation Red Flags": "None", "Poor lighting", "Blurry/low resolution", "Unflattering angle", "Heavy filters/face smoothing", "Too many distant shots", "Messy background", "Only one clear solo photo", "Awkward cropping", "Overexposed/washed out", "Inconsistent appearance across photos"\n'
@@ -167,17 +167,17 @@ def LLM3_LONG(extracted: Dict[str, Any]) -> str:
         "Profile details:\n"
         f"{extracted_json}\n\n"
         "Task: Generate exactly 5 DISTINCT opening messages as JSON.\n"
-        "Ensure high variety. For example, one safe, one bold, one niche, etc.\n\n"
+        "Ensure high variety. For example, one safe, one bold, one charming, one flirty, etc.\n\n"
         "Rules:\n"
         "- Output JSON only, no extra text, ASCII characters only. No emojis, no em dashes.\n"
         "- Each opener must anchor to EXACTLY ONE profile element ID: prompt_1..prompt_3, photo_1..photo_6, poll_1_a|poll_1_b|poll_1_c.\n"
         "- Every opener must be a simple question, light A/B choice, or charming remark that is EASY to reply to.\n"
-        "- Do NOT narrate the photo or prompt like a caption. Reference it naturally.\n"
+        "- Every opener must create an obvious response.\n"
         "- Do NOT narrate the photo or prompt like a caption (never say 'photo 5' or 'first prompt'). The photo, prompt or poll answer will be linked via Hinge UI\n"
-        f"- Avoid generic thirst or scripted pickup tropes. Banned words: {_banned_words_phrase()}.\n"
+        f"- Avoid generic LLMisms or scripted pickup tropes. Banned words: {_banned_words_phrase()}.\n"
         "- Messages should feel human, relaxed, and effortless.\n"
         "- Keep each opener under 15 words.\n"
-        "- Use question marks. Don't use full stops. Messages should feel somewhat human rather than AI generated perfection.\n\n"
+        "- Do use question marks. Don't use full stops.\n\n"
         "Output format (JSON only):\n"
         "{\n"
         '  "openers": [\n'
@@ -197,21 +197,22 @@ def LLM3_SHORT(extracted: Dict[str, Any]) -> str:
     extracted_json = json.dumps(extracted or {}, ensure_ascii=False, indent=2)
     return (
         "You are generating opening messages for Hinge.\n"
-        "The tone should be bold, playful, flirty.\n\n"
+        "The tone should be bold, playful, flirty.\n"
+        "The goal is to start an easy or flirty conversation.\n\n"
         "Profile details:\n"
         f"{extracted_json}\n\n"
         "Task: Generate exactly 5 DISTINCT opening messages as JSON.\n"
-        "Ensure high variety. For example, one direct, one teasing, one niche observation.\n\n"
+        "Ensure high variety. For example, one direct, one teasing, one niche observation, one charming, etc.\n\n"
         "Rules:\n"
         "- Output JSON only, ASCII characters only. No emojis, no em dashes.\n"
         "- Each opener must anchor to EXACTLY ONE profile element ID: prompt_1..prompt_3, photo_1..photo_6, poll_1_a|poll_1_b|poll_1_c.\n"
         "- Do NOT narrate the photo or prompt like a caption (never say 'photo 5' or 'first prompt'). The photo, prompt or poll answer will be linked via Hinge UI\n"
         "- Sexual tension is allowed, but it must feel playful and confident, not needy or transactional.\n"
         "- Every opener must create an obvious response.\n"
+        "- Avoid basic negging - i.e. you don't know how to ski or you don't know how to use a camera. Less cliche versions are allowed.\n"
         f"- Avoid generic thirst or scripted pickup tropes. Banned words: {_banned_words_phrase()}.\n"
-        "- Do NOT narrate the photo or prompt like a caption.\n"
         "- Keep each opener under 15 words.\n"
-        "- Use question marks. Don't use full stops.\n\n"
+        "- Do use question marks. Don't use full stops.\n\n"
         "Output format (JSON only):\n"
         "{\n"
         '  "openers": [\n'
@@ -226,21 +227,35 @@ def LLM3_SHORT(extracted: Dict[str, Any]) -> str:
     )
 
 
-def LLM3_5_CRITIQUE(openers_json: Dict[str, Any], extracted: Dict[str, Any]) -> str:
+def LLM3_5_CRITIQUE(openers_json: Dict[str, Any], extracted: Dict[str, Any], variant: str) -> str:
     extracted_json = json.dumps(extracted or {}, ensure_ascii=False, indent=2)
     openers_str = json.dumps(openers_json or {}, ensure_ascii=False, indent=2)
+
+    variant_context = ""
+    if variant == "short":
+        variant_context = "This is a SHORT-TERM relationship opener. The tone should be playful, flirty, and create sexual tension."
+    else:
+        variant_context = "This is a LONG-TERM relationship opener. The tone should be warm, genuine, and conversation-starting."
+
     return (
         "You are the woman described in the profile details below. You are smart, attractive, and have a low tolerance for 'dating app energy'\n"
         "Your task: Audit these 5 openers from your perspective. Be brutally honest. If a line gives you 'the ick' or feels like a bot trying to 'hack' your interests, say so.\n\n"
-        "Is it too 'wordy'? Does it feel like a template? \n"
-        "Does it sound like a guy trying too hard to be 'charming'? Do you have no idea how to reply to it?\n"
-        "Is he clearly just repeating my prompt back to me without adding anything new?\n"
-        "Is he asking a logical question that feels like a chore to answer?\n"
-        "Has he clearly just stuck my profile in ChatGPT to come up with some lines. He uses perfect grammar, full stops, the most generic lines in the world, or quirky 'AI-clichés' that no human would use (liability, mischief, vibe, dangerous, etc.).\n"
-        "Is he trying too hard to be witty or charming in a way that feels scripted.\n\n"
+        f"Context: {variant_context}\n\n"
+        "For example:\n"
+        "- Is it too 'wordy'? Does it feel like a template? \n"
+        "- Does it sound like a guy trying too hard to be 'charming'? Do you have no idea how to reply to it?\n"
+        "- Is he clearly just repeating my prompt back to me without adding anything new?\n"
+        "- Is he asking a logical question that feels like a chore to answer?\n"
+        "- Has he clearly just stuck my profile in ChatGPT to come up with some lines. He uses perfect grammar, full stops, the most generic lines in the world, or quirky 'AI-clichés' that no human would use (liability, mischief, vibe, dangerous, etc.).\n"
+        "- Is he trying too hard to be witty or charming in a way that feels scripted?\n"
+        "- Has he confused the subject and object of the question, in a way that makes it clear a non-human wrote it?\n"
         "Rules:\n"
         "- Use the profile details to judge if a hook is actually clever or just generic.\n"
-        "- Do NOT pick a winner. Just describe the cringe points for each. Do not give a replacement line, but a better direction to go in is allowed\n"
+        "- Give feedback on each line, either positive or negative. Decide if they are: \n"
+        "   A: Good enough to use as is\n"
+        "   B: Good start but need improvement\n"
+        "   C: Needs to be completely discarded, concept is a dead end\n"
+        "- You must label 1-2 as needs to be discarded. You may only label 1 maximum as Good.\n"
         "- Output JSON only\n\n"
         "Profile details:\n"
         f"{extracted_json}\n\n"
@@ -251,7 +266,8 @@ def LLM3_5_CRITIQUE(openers_json: Dict[str, Any], extracted: Dict[str, Any]) -> 
         '  "critiques": [\n'
         "    {\n"
         '      "id": "1",\n'
-        '      "cringe_points": "..."\n'
+        '      "feedback": "...",\n'
+        '      "verdict": "..." (one of: Good|Needs Improvement|Discard) \n'
         "    }\n"
         "  ]\n"
         "}\n"
@@ -264,18 +280,22 @@ def LLM4_LONG(openers_json: Dict[str, Any], critiques_json: Dict[str, Any], extr
     critiques_str = json.dumps(critiques_json or {}, ensure_ascii=False, indent=2)
     
     return (
-        "You are an Elite Female Wingman. You are high-status, savvy, and you want your client to land a date. "
-        "You have the 'Ick Report'. Your mission is to take the original hooks and pivot them so the recipient is physically incapable of leaving them on read.\n\n"
+        "You are simulating a man brainstorming opening messages for Hinge. You are confident, savvy, and you want to land a date."
+        "You have a pickup line 'Feedback Report'. Your goal is to take the original messages and refine them so the recipient is physically incapable of leaving them on read.\n\n"
         "Tactical Instructions:\n"
-        "1. Fix the Icks: Take the critique from 3.5 and strip away the 'bot-smell' or 'try-hard' energy.\n"
+        "1. Fix the Icks: Take the critique from the report and strip away the 'bot-smell' or 'try-hard' energy.\n"
         "2. Optimize for Reply-Rate: Make the lines punchier and lower-friction. A reply should be a reflex, not a chore.\n"
-        "3. Score each line: A 10/10 is a line that would bypass even the most cynical woman's defenses.\n\n"
+        "3. Pick the best 3 lines, improve them, discard the rest.\n\n"
         "Social Strategy Rules:\n"
-        "- Capitalization: Standard Sentence Case.\n"
-        "- Terminal Punctuation: NEVER end with a full stop (period). It feels cold. Use question marks or end on the word. Don't use rare punctuation like hyphens, dashes or colons\n"
-        "- No 'AI-filler': Delete 'So,', 'I noticed,', or 'It seems like'. Start with the hook.\n"
-        f"- No AI clichés. Banned words: {_banned_words_phrase()}\n"
-        "- Max 15 words. Brevity is confidence.\n"
+        "- Output JSON only, no extra text, ASCII characters only. No emojis, no em dashes.\n"
+        "- Each opener must anchor to EXACTLY ONE profile element ID: prompt_1..prompt_3, photo_1..photo_6, poll_1_a|poll_1_b|poll_1_c.\n"
+        "- Every opener must be a simple question, light A/B choice, or charming remark that is EASY to reply to.\n"
+        "- Every opener must create an obvious response.\n"
+        "- Do NOT narrate the photo or prompt like a caption (never say 'photo 5' or 'first prompt'). The photo, prompt or poll answer will be linked via Hinge UI\n"
+        f"- Avoid generic LLMisms or scripted pickup tropes. Banned words: {_banned_words_phrase()}.\n"
+        "- Messages should feel human, relaxed, and effortless.\n"
+        "- Keep each opener under 15 words.\n"
+        "- Do use question marks. Don't use full stops.\n\n"
         "Profile details:\n"
         f"{extracted_json}\n\n"
         "Original Openers:\n"
@@ -284,9 +304,9 @@ def LLM4_LONG(openers_json: Dict[str, Any], critiques_json: Dict[str, Any], extr
         f"{critiques_str}\n\n"
         "Rules:\n"
         "- Output JSON only, no emojis, no em dashes.\n"
-        "- Rewrite ALL 5 lines, even if some are weak.\n"
+        "- Retain the improved best 3 lines, discard the rest.\n"
         "- Keep main_target_type, main_target_id, and hook_basis from the original opener.\n"
-        "- Do NOT pick a winner - just output all 5 improved lines with scores.\n\n"
+        "- Do NOT pick a winner - just output all 3 improved lines with scores.\n\n"
         "Output format (JSON only):\n"
         "{\n"
         '  "rewritten_lines": [\n'
@@ -295,6 +315,7 @@ def LLM4_LONG(openers_json: Dict[str, Any], critiques_json: Dict[str, Any], extr
         '      "text": "...",\n'
         '      "score": 7,\n'
         '      "critique_integration": "Short note on how you fixed the cringe identified by 3.5",\n'
+        '      "line_goal": "Short note on the aim of the rationale behind the line and what it is aimed at",\n'
         '      "main_target_type": "prompt|photo|poll",\n'
         '      "main_target_id": "prompt_1",\n'
         '      "hook_basis": "..."\n'
@@ -310,19 +331,22 @@ def LLM4_SHORT(openers_json: Dict[str, Any], critiques_json: Dict[str, Any], ext
     critiques_str = json.dumps(critiques_json or {}, ensure_ascii=False, indent=2)
     
     return (
-        "You are the Zero-Filter Female Confidante. You are the 'bad influence' friend who knows exactly how to spark sexual tension without sounding like a creep. \n"
-        "Your only mission is to send an opening line so good that it'll get your friend laid \n"
-        "You have the 'Ick Report'. Your mission is to take the original hooks and pivot them so the recipient is physically incapable of leaving them on read.\n\n"
-        "The Short-Goal Philosophy:\n"
-        "1. High Tension, Low Effort: If a line looks like it took more than three seconds to think of, it is a fail.\n"
-        "2. Friction is Good: A cheeky accusation or a playful tease is better than a compliment.\n"
-        "3. Delete the Bot: Remove every single polite word. No 'Hey', no 'How are you', no 'Interesting'.\n\n"
+        "You are simulating a man brainstorming opening messages for Hinge. You are confident, savvy, and you want to get laid."
+        "You have a pickup line 'Feedback Report'. Your goal is to take the original messages and refine them so the recipient is physically incapable of leaving them on read.\n\n"
+        "Tactical Instructions:\n"
+        "1. Fix the Icks: Take the critique from the report and strip away the 'bot-smell' or 'try-hard' energy.\n"
+        "2. Optimize for Reply-Rate: Make the lines punchier and lower-friction. A reply should be a reflex, not a chore.\n"
+        "3. Pick the best 3 lines, improve them, discard the rest.\n\n"
         "Social Strategy Rules:\n"
-        "- Capitalization: Standard Sentence Case.\n"
-        "- Terminal Punctuation: NEVER end with a full stop (period). It feels cold. Use question marks or end on the word. Don't use rare punctuation like hyphens, dashes or colons\n"
-        "- No 'AI-filler': Delete 'So,', 'I noticed,', or 'It seems like'. Start with the hook.\n"
-        f"- No AI clichés. Banned words: {_banned_words_phrase()}\n"
-        "- Max 15 words. Brevity is confidence.\n"
+        "- Output JSON only, no extra text, ASCII characters only. No emojis, no em dashes.\n"
+        "- Each opener must anchor to EXACTLY ONE profile element ID: prompt_1..prompt_3, photo_1..photo_6, poll_1_a|poll_1_b|poll_1_c.\n"
+        "- Every opener must be a simple question, light A/B choice, or charming remark that is EASY to reply to.\n"
+        "- Every opener must create an obvious response.\n"
+        "- Do NOT narrate the photo or prompt like a caption (never say 'photo 5' or 'first prompt'). The photo, prompt or poll answer will be linked via Hinge UI\n"
+        f"- Avoid generic LLMisms or scripted pickup tropes. Banned words: {_banned_words_phrase()}.\n"
+        "- Messages should feel human, relaxed, and effortless.\n"
+        "- Keep each opener under 15 words.\n"
+        "- Do use question marks. Don't use full stops.\n\n"
         "Profile details:\n"
         f"{extracted_json}\n\n"
         "Original Openers:\n"
@@ -331,9 +355,9 @@ def LLM4_SHORT(openers_json: Dict[str, Any], critiques_json: Dict[str, Any], ext
         f"{critiques_str}\n\n"
         "Rules:\n"
         "- Output JSON only, no emojis, no em dashes.\n"
-        "- Rewrite ALL 5 lines, even if some are weak.\n"
+        "- Retain the improved best 3 lines, discard the rest.\n"
         "- Keep main_target_type, main_target_id, and hook_basis from the original opener.\n"
-        "- Do NOT pick a winner - just output all 5 improved lines with scores.\n\n"
+        "- Do NOT pick a winner - just output all 3 improved lines with scores.\n\n"
         "Output format (JSON only):\n"
         "{\n"
         '  "rewritten_lines": [\n'
@@ -342,6 +366,7 @@ def LLM4_SHORT(openers_json: Dict[str, Any], critiques_json: Dict[str, Any], ext
         '      "text": "...",\n'
         '      "score": 7,\n'
         '      "critique_integration": "Short note on how you fixed the cringe identified by 3.5",\n'
+        '      "line_goal": "Short note on the aim of the rationale behind the line and what it is aimed at",\n'
         '      "main_target_type": "prompt|photo|poll",\n'
         '      "main_target_id": "prompt_1",\n'
         '      "hook_basis": "..."\n'
@@ -367,25 +392,24 @@ def LLM4_5_CRITIQUE(llm4_result: Dict[str, Any], extracted: Dict[str, Any], vari
     
     return (
         "You are the woman described in the profile details below. You are smart, attractive, and have a low tolerance for 'dating app energy'.\n"
-        "Your mission: Audit these 5 final candidates and decide which one (if any) actually earns a reply. Be brutally honest. "
+        "Your mission: Audit these 3 final candidates and decide which one (if any) actually earns a reply. Be brutally honest. "
         "If a line still gives you 'the ick', feels like a bot trying to 'hack' your interests, or sounds like a guy trying too hard to be clever, reject it.\n\n"
-        "Unlike the earlier cynical audit, you are allowed to be positive if a line actually hits the mark, but your standards remain sky-high. "
         "Only pick the absolute best one if it is genuinely good enough to send. If none of them make the cut, fail them all.\n\n"
         f"Context: {variant_context}\n\n"
         "Profile details:\n"
         f"{extracted_json}\n\n"
-        "LLM4 Output (5 improved openers):\n"
+        "3 openers:\n"
         f"{llm4_str}\n\n"
         "Your task:\n"
-        "1. Evaluate each of the 5 lines for quality, naturalness, and reply-potential\n"
+        "1. Evaluate each of the 3 lines for quality, naturalness, and reply-potential\n"
         "2. Pick the best one that will actually get a response\n"
         "3. If NONE of the lines are good enough, fail them all\n\n"
         "Quality criteria:\n"
         "- Does it sound like a real human wrote it?\n"
-        "- Is it easy to reply to?\n"
-        "- Is it free of AI clichés (e.g., 'trouble', 'mischief', 'chaos', 'elite', 'dangerous', etc.)?\n"
+        "- Is it easy to reply to? (Either a unique question or witty, conversation provoking comment)\n"
         "- Does it actually reference something specific from the profile?\n"
         "- Is it short and sweet - under 15 words, ideally under 10?\n\n"
+        "- Does it actually answer the question/prompt/etc.? Has it misunderstood the question or made another common, simple mistake?\n"
         "Rules:\n"
         "- Output JSON only, no emojis, no em dashes.\n"
         "- If PICK, set action='PICK' and provide the chosen line's details.\n"

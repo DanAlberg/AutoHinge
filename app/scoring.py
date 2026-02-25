@@ -253,8 +253,6 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     symmetry_norm = _norm_value(symmetry)
     if symmetry_norm == _norm_value("Low"):
         record("Visual Analysis", "Facial Symmetry Level", symmetry, -1000)
-    elif symmetry_norm == _norm_value("Moderate"):
-        record("Visual Analysis", "Facial Symmetry Level", symmetry, -5)
 
     hair_color = visual_val("Hair Color")
     if _norm_value(hair_color) == _norm_value("Red/ginger"):
@@ -643,8 +641,6 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
     symmetry_norm = _norm_value(symmetry)
     if symmetry_norm == _norm_value("Low"):
         record("Visual Analysis", "Facial Symmetry Level", symmetry, -1000)
-    elif symmetry_norm == _norm_value("Moderate"):
-        record("Visual Analysis", "Facial Symmetry Level", symmetry, -5)
 
     hair_color = visual_val("Hair Color")
     hair_norm = _norm_value(hair_color)

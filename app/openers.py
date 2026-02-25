@@ -2,10 +2,34 @@ import json
 import time
 from typing import Any, Dict
 
+from json_repair import repair_json
+
 from llm_client import get_default_model, get_llm_client, resolve_model, LLMError
 from prompts import LLM3_LONG, LLM3_SHORT, LLM3_5_CRITIQUE, LLM4_LONG, LLM4_SHORT, LLM4_5_CRITIQUE, LLM5_SAFETY
 from ai_trace import _ai_trace_log, _ai_trace_log_response, _ai_trace_prompt_lines
 from runtime import _log
+
+
+def _parse_json_with_fallback(raw: str) -> Dict[str, Any]:
+    """Parse JSON with fallback to json_repair for malformed output.
+    
+    Tries standard json.loads first. If that fails, attempts repair.
+    If repair also fails, re-raises the original error (crash, don't guess).
+    """
+    raw = raw or "{}"
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError as original_error:
+        # Try json_repair as fallback
+        try:
+            repaired = repair_json(raw)
+            parsed = json.loads(repaired)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            # Repair failed - re-raise original error to crash cleanly
+            raise original_error
+
 
 def run_llm3_long(extracted: Dict[str, Any], model: str | None = None) -> Dict[str, Any]:
     prompt = LLM3_LONG(extracted)
@@ -48,8 +72,8 @@ def run_llm3_long(extracted: Dict[str, Any], model: str | None = None) -> Dict[s
     raw = resp.choices[0].message.content or ""
     
     try:
-        parsed = json.loads(raw or "{}")
-    except Exception as e:
+        parsed = _parse_json_with_fallback(raw)
+    except json.JSONDecodeError as e:
         _ai_trace_log_response(
             "llm3_long",
             resolved_model,
@@ -139,8 +163,8 @@ def run_llm3_short(extracted: Dict[str, Any], model: str | None = None) -> Dict[
     raw = resp.choices[0].message.content or ""
     
     try:
-        parsed = json.loads(raw or "{}")
-    except Exception as e:
+        parsed = _parse_json_with_fallback(raw)
+    except json.JSONDecodeError as e:
         _ai_trace_log_response(
             "llm3_short",
             resolved_model,
@@ -189,9 +213,9 @@ def run_llm3_short(extracted: Dict[str, Any], model: str | None = None) -> Dict[
     return parsed
 
 
-def run_llm3_5_critique(openers_json: Dict[str, Any], extracted: Dict[str, Any], model: str | None = None) -> Dict[str, Any]:
+def run_llm3_5_critique(openers_json: Dict[str, Any], extracted: Dict[str, Any], variant: str, model: str | None = None) -> Dict[str, Any]:
     """Run the cynical critique on generated openers."""
-    prompt = LLM3_5_CRITIQUE(openers_json, extracted)
+    prompt = LLM3_5_CRITIQUE(openers_json, extracted, variant)
     requested_model = model or get_default_model()
     resolved_model = resolve_model(requested_model)
     trace_lines = [
@@ -231,8 +255,8 @@ def run_llm3_5_critique(openers_json: Dict[str, Any], extracted: Dict[str, Any],
     raw = resp.choices[0].message.content or ""
     
     try:
-        parsed = json.loads(raw or "{}")
-    except Exception as e:
+        parsed = _parse_json_with_fallback(raw)
+    except json.JSONDecodeError as e:
         _ai_trace_log_response(
             "llm3_5_critique",
             resolved_model,
@@ -322,8 +346,8 @@ def _run_llm4_prompt(prompt: str, call_id: str, model: str | None = None) -> Dic
     raw = resp.choices[0].message.content or ""
     
     try:
-        parsed = json.loads(raw or "{}")
-    except Exception as e:
+        parsed = _parse_json_with_fallback(raw)
+    except json.JSONDecodeError as e:
         _ai_trace_log_response(
             call_id,
             resolved_model,
@@ -419,8 +443,8 @@ def run_llm4_5_critique(llm4_result: Dict[str, Any], extracted: Dict[str, Any], 
     raw = resp.choices[0].message.content or ""
     
     try:
-        parsed = json.loads(raw or "{}")
-    except Exception as e:
+        parsed = _parse_json_with_fallback(raw)
+    except json.JSONDecodeError as e:
         _ai_trace_log_response(
             "llm4_5_critique",
             resolved_model,
@@ -516,8 +540,8 @@ def run_llm5_safety(
     raw = resp.choices[0].message.content or ""
     
     try:
-        parsed = json.loads(raw or "{}")
-    except Exception as e:
+        parsed = _parse_json_with_fallback(raw)
+    except json.JSONDecodeError as e:
         _ai_trace_log_response(
             "llm5_safety",
             resolved_model,

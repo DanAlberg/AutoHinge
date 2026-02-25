@@ -21,7 +21,7 @@ from extraction import run_llm1_visual, run_profile_eval_llm, _build_extracted_p
 from openers import run_llm3_long, run_llm3_short, run_llm3_5_critique, run_llm4_long, run_llm4_short, run_llm4_5_critique, run_llm5_safety
 from llm_client import LLMError
 from profile_utils import _get_core, _norm_value
-from runtime import _is_run_json_enabled, _log, set_verbose
+from runtime import _is_run_json_enabled, _log, set_verbose, set_interrupt_check
 from scoring import _classify_preference_flag, _format_score_table, _score_profile_long, _score_profile_short
 from sqlite_store import (
     get_db_path,
@@ -35,7 +35,6 @@ from ui_scan import (
     _bounds_visible,
     _bounds_center,
     _bounds_close,
-    _clear_crops_folder,
     _compute_desired_offset,
     _dump_ui_xml,
     _ensure_photo_square,
@@ -97,8 +96,7 @@ def _beep(times: int = 1) -> None:
         import winsound
         for _ in range(times):
             winsound.MessageBeep(0x40)  # MB_ICONASTERISK - pleasant "asterisk" sound
-            if times > 1:
-                time.sleep(0.15)  # Small delay between beeps
+            time.sleep(0.15)  # Small delay between beeps
     except Exception:
         pass
 
@@ -139,20 +137,65 @@ def _force_gemini_env() -> None:
 # Global args reference for the signal handler to modify state
 GLOBAL_ARGS = None
 
+# Pending interrupt flag - set by signal handler, checked after LLM calls
+PENDING_INTERRUPT = False
+
+# Track last interrupt time for double Ctrl+C = hard kill
+_LAST_INTERRUPT_TIME = 0.0
+_INTERRUPT_KILL_WINDOW = 2.0  # seconds
+
 
 class RetryInteractionException(BaseException):
     """Raised by signal handler to restart the decision/action loop."""
     pass
 
 
+def _interrupt_beep() -> None:
+    """
+    Play a distinct sound to indicate interrupt was queued.
+    Uses MB_ICONEXCLAMATION (exclamation) - different from the normal MB_ICONASTERISK.
+    Safe on non-Windows (does nothing).
+    """
+    if os.name != "nt":
+        return
+    try:
+        import winsound
+        winsound.MessageBeep(0x30)  # MB_ICONEXCLAMATION - distinct "interrupt queued" sound
+    except Exception:
+        pass
+
+
 def _signal_handler(sig, frame):
     """
-    Intercept Ctrl+C to provide an interactive menu.
+    Intercept Ctrl+C - sets a flag for deferred handling.
+    Double Ctrl+C within 2 seconds = hard kill.
     """
-    # Restore default handler temporarily to allow force-kill if this hangs
-    original_handler = signal.getsignal(signal.SIGINT)
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    global PENDING_INTERRUPT, _LAST_INTERRUPT_TIME
+    import time as _time
+    now = _time.time()
+    
+    # Check for double Ctrl+C = hard kill
+    if now - _LAST_INTERRUPT_TIME < _INTERRUPT_KILL_WINDOW:
+        print("\n[INTERRUPT] Double Ctrl+C - hard exit!")
+        sys.exit(1)
+    
+    _LAST_INTERRUPT_TIME = now
+    PENDING_INTERRUPT = True
+    print("\n[INTERRUPT] Ctrl+C received - will pause after current operation (Ctrl+C again to force quit)...")
+    _interrupt_beep()
 
+
+def _handle_pending_interrupt() -> None:
+    """
+    Show the interrupt menu if a Ctrl+C was received during an LLM call.
+    Called after each LLM call completes.
+    """
+    global PENDING_INTERRUPT
+    if not PENDING_INTERRUPT:
+        return
+    
+    PENDING_INTERRUPT = False  # Reset the flag
+    
     print("\n\n[PAUSED] Execution paused via Ctrl+C.")
     print("1. Continue (Resume program)")
     print(f"2. Toggle Unrestricted Mode (Current: {GLOBAL_ARGS.unrestricted if GLOBAL_ARGS else 'Unknown'})")
@@ -174,7 +217,6 @@ def _signal_handler(sig, frame):
             if GLOBAL_ARGS:
                 GLOBAL_ARGS.unrestricted = False
                 print("[CONFIG] Unrestricted mode disabled for retry")
-            signal.signal(signal.SIGINT, _signal_handler)  # Restore handler before raising
             raise RetryInteractionException()
         elif choice == '5':
             print("[QUIT] Exiting...")
@@ -183,7 +225,6 @@ def _signal_handler(sig, frame):
         pass  # Fall through to resume
     
     print("[RESUME] Resuming execution...")
-    signal.signal(signal.SIGINT, _signal_handler)
 
 
 def _init_device(device_ip: str):
@@ -497,6 +538,25 @@ def _set_keep_awake(enabled: bool, device=None) -> None:
         print(f"[AWAKE] failed to set stayon {val}: {e}")
 
 
+def _set_heads_up_blocked(enabled: bool, device=None) -> None:
+    """
+    Block heads-up notification banners (floating preview bars at top of screen).
+    Keeps vibration and notification shade - just blocks the popup banners.
+    Uses Android secure settings: heads_up_enabled = 0 (blocked) or 1 (normal).
+    """
+    val = "0" if enabled else "1"  # 0 = block heads-up, 1 = allow
+    cmd = f"settings put secure heads_up_enabled {val}"
+    try:
+        if device is not None:
+            device.shell(cmd)
+        else:
+            subprocess.run(["adb", "shell", "settings", "put", "secure", "heads_up_enabled", val], check=False)
+        state = "blocked" if enabled else "restored"
+        print(f"[NOTIFY] heads-up {state}")
+    except Exception as e:
+        print(f"[NOTIFY] failed to set heads_up_enabled: {e}")
+
+
 def _enter_comment_text(
     device,
     width: int,
@@ -508,10 +568,11 @@ def _enter_comment_text(
     last_xml = ""
     for _ in range(attempts):
         comment_bounds = None
+        is_persistent = False
         for _ in range(3):
             last_xml = _dump_ui_xml(device)
             post_nodes = _parse_ui_nodes(last_xml)
-            comment_bounds = _find_add_comment_bounds(post_nodes)
+            comment_bounds, is_persistent = _find_add_comment_bounds(post_nodes)
             if comment_bounds:
                 break
             time.sleep(0.2)
@@ -529,9 +590,16 @@ def _enter_comment_text(
         except Exception:
             time.sleep(0.2)
             continue
+        
+        # New UI: The "Edit comment" box persists and often doesn't update its 'text' field in XML.
+        # If we identified it as persistent and have typed, assume success to avoid repetition/loops.
+        if is_persistent:
+            return True
+
         last_xml = _dump_ui_xml(device)
         post_nodes = _parse_ui_nodes(last_xml)
-        if not _find_add_comment_bounds(post_nodes):
+        check_bounds, _ = _find_add_comment_bounds(post_nodes)
+        if not check_bounds:
             return True
         time.sleep(0.2)
     if last_xml:
@@ -749,48 +817,10 @@ def _run_single_profile(
     out_path = ""
     table_path = ""
     log_state: Dict[str, Any] = {}
-    try:
-        os.makedirs("logs", exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        suffix = f"_{profile_idx + 1:02d}" if total_profiles > 1 else ""
-        out_path = os.path.join("logs", f"rating_test_{ts}{suffix}.json")
-        table_path = os.path.join("logs", f"rating_test_{ts}{suffix}.txt")
-        log_state = {
-            "meta": {
-                "timestamp": datetime.now().isoformat(timespec="seconds"),
-                "llm_provider": os.getenv("LLM_PROVIDER", ""),
-                "model": os.getenv("LLM_SMALL_MODEL") or os.getenv("GEMINI_SMALL_MODEL") or "",
-                "images_count": None,
-                "images_paths": [],
-                "timings": {},
-                "scoring_ruleset": "long_v0",
-            },
-            "biometrics": {},
-            "ui_map_summary": {},
-            "llm1_result": {},
-            "llm1_meta": {},
-            "extracted_profile": {},
-            "profile_eval": {},
-            "long_score_result": {},
-            "short_score_result": {},
-            "score_table_long": "",
-            "score_table_short": "",
-            "score_table": "",
-            "gate_decision": "",
-            "gate_metrics": {},
-            "manual_override": "",
-            "llm3_variant": "",
-            "llm3_result": {},
-            "llm3_5_result": {},
-            "llm4_result": {},
-            "llm4_5_result": {},
-            "llm5_result": {},
-            "target_action": {},
-        }
-        _write_run_log(out_path, log_state)
-    except Exception as e:
-        print(f"[LOG] failed to init run log: {e}")
-    _clear_crops_folder()
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    suffix = f"_{profile_idx + 1:02d}" if total_profiles > 1 else ""
+    ts_part = ts + suffix  # Include suffix in timestamp for folder naming
+    
     if not _wait_for_loading_to_clear(device, context="start"):
         return 3
     
@@ -801,10 +831,52 @@ def _run_single_profile(
         height,
         max_scrolls=max_scrolls,
         scroll_step_px=scroll_step,
+        logs_dir="logs",
+        timestamp=ts_part,
     )
     timings["scan_s"] = round(time.perf_counter() - t0, 2)
     ui_map = scan_result.get("ui_map", {})
     biometrics = scan_result.get("biometrics", {})
+    run_folder = scan_result.get("run_folder", "")
+    
+    # Initialize log state and output paths using the run folder
+    if run_folder:
+        out_path = os.path.join(run_folder, "profile.json")
+        table_path = os.path.join(run_folder, "score.txt")
+    log_state = {
+        "meta": {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "llm_provider": os.getenv("LLM_PROVIDER", ""),
+            "model": os.getenv("LLM_SMALL_MODEL") or os.getenv("GEMINI_SMALL_MODEL") or "",
+            "images_count": None,
+            "images_paths": [],
+            "timings": {},
+            "scoring_ruleset": "long_v0",
+        },
+        "biometrics": {},
+        "ui_map_summary": {},
+        "llm1_result": {},
+        "llm1_meta": {},
+        "extracted_profile": {},
+        "profile_eval": {},
+        "long_score_result": {},
+        "short_score_result": {},
+        "score_table_long": "",
+        "score_table_short": "",
+        "score_table": "",
+        "gate_decision": "",
+        "gate_metrics": {},
+        "manual_override": "",
+        "llm3_variant": "",
+        "llm3_result": {},
+        "llm3_5_result": {},
+        "llm4_result": {},
+        "llm4_5_result": {},
+        "llm5_result": {},
+        "target_action": {},
+    }
+    _write_run_log(out_path, log_state)
+    
     ui_photos = ui_map.get("photos", [])
     llm1_photo_entries = [
         p for p in ui_photos
@@ -830,6 +902,7 @@ def _run_single_profile(
         photo_paths,
         model=os.getenv("LLM_SMALL_MODEL") or os.getenv("GEMINI_SMALL_MODEL") or None,
     )
+    _handle_pending_interrupt()  # Check for Ctrl+C after LLM call
     if isinstance(llm1_meta, dict):
         llm1_meta["photo_id_map"] = llm1_photo_id_map
     timings["llm1_s"] = round(time.perf_counter() - t0, 2)
@@ -851,6 +924,7 @@ def _run_single_profile(
         extracted,
         model=os.getenv("LLM_SMALL_MODEL") or os.getenv("GEMINI_SMALL_MODEL") or None,
     )
+    _handle_pending_interrupt()  # Check for Ctrl+C after LLM call
     timings["llm2_s"] = round(time.perf_counter() - t0, 2)
     if log_state:
         log_state["profile_eval"] = eval_result
@@ -980,6 +1054,7 @@ def _run_single_profile(
                         llm3_result = run_llm3_short(extracted)
                     else:
                         llm3_result = run_llm3_long(extracted)
+                    _handle_pending_interrupt()  # Check for Ctrl+C after LLM call
                     timings["llm3_s"] = round(time.perf_counter() - t0, 2)
                     if log_state:
                         log_state["llm3_result"] = llm3_result
@@ -990,7 +1065,8 @@ def _run_single_profile(
                     
                     # Step 2: Cynical critique
                     t0 = time.perf_counter()
-                    llm3_5_result = run_llm3_5_critique(llm3_result, extracted)
+                    llm3_5_result = run_llm3_5_critique(llm3_result, extracted, llm3_variant)
+                    _handle_pending_interrupt()  # Check for Ctrl+C after LLM call
                     timings["llm3_5_s"] = round(time.perf_counter() - t0, 2)
                     if log_state:
                         log_state["llm3_5_result"] = llm3_5_result
@@ -1002,6 +1078,7 @@ def _run_single_profile(
                         llm4_result = run_llm4_short(llm3_result, llm3_5_result, extracted)
                     else:
                         llm4_result = run_llm4_long(llm3_result, llm3_5_result, extracted)
+                    _handle_pending_interrupt()  # Check for Ctrl+C after LLM call
                     timings["llm4_s"] = round(time.perf_counter() - t0, 2)
                     if log_state:
                         log_state["llm4_result"] = llm4_result
@@ -1010,6 +1087,7 @@ def _run_single_profile(
                     # Step 3.5: LLM4.5 picks best opener or fails all
                     t0 = time.perf_counter()
                     llm4_5_result = run_llm4_5_critique(llm4_result, extracted, llm3_variant)
+                    _handle_pending_interrupt()  # Check for Ctrl+C after LLM call
                     timings["llm4_5_s"] = round(time.perf_counter() - t0, 2)
                     if log_state:
                         log_state["llm4_5_result"] = llm4_5_result
@@ -1064,6 +1142,7 @@ def _run_single_profile(
 
                         t0 = time.perf_counter()
                         safety_res = run_llm5_safety(extracted, decision, chosen_text, safety_context)
+                        _handle_pending_interrupt()  # Check for Ctrl+C after LLM call
                         timings["llm5_s"] = round(time.perf_counter() - t0, 2)
                         if log_state:
                             log_state["llm5_result"] = safety_res
@@ -1333,6 +1412,7 @@ def _run_single_profile(
 
                     t0 = time.perf_counter()
                     safety_res = run_llm5_safety(extracted, decision, "", safety_context)
+                    _handle_pending_interrupt()  # Check for Ctrl+C after LLM call
                     timings["llm5_s"] = round(time.perf_counter() - t0, 2)
                     if log_state:
                         log_state["llm5_result"] = safety_res
@@ -1583,6 +1663,9 @@ def main() -> int:
     # Register the pause handler for Ctrl+C
     signal.signal(signal.SIGINT, _signal_handler)
 
+    # Register interrupt check callback for ui_scan.py loops
+    set_interrupt_check(_handle_pending_interrupt)
+
     global GLOBAL_ARGS
     args = _parse_args()
     GLOBAL_ARGS = args
@@ -1603,6 +1686,7 @@ def main() -> int:
             return 1
         if keep_awake:
             _set_keep_awake(True, device=device)
+            _set_heads_up_blocked(True, device=device)
 
         total_profiles = max(1, int(args.profiles))
         for idx in range(total_profiles):
@@ -1644,6 +1728,7 @@ def main() -> int:
     finally:
         if keep_awake and device:
             _set_keep_awake(False, device=device)
+            _set_heads_up_blocked(False, device=device)
 
 
 if __name__ == "__main__":

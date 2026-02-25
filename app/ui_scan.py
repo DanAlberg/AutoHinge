@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from PIL import Image
 
 from helper_functions import swipe, tap
-from runtime import _log
+from runtime import _log, check_interrupt
 from text_utils import normalize_dashes
 
 def _normalize_text_basic(text: str) -> str:
@@ -422,31 +422,44 @@ def _find_dislike_bounds(nodes: List[Dict[str, Any]]) -> Optional[Tuple[int, int
     return None
 
 
-def _find_add_comment_bounds(nodes: List[Dict[str, Any]]) -> Optional[Tuple[int, int, int, int]]:
+def _find_add_comment_bounds(nodes: List[Dict[str, Any]]) -> Tuple[Optional[Tuple[int, int, int, int]], bool]:
     for n in nodes:
         tx = (n.get("text") or "").strip().lower()
         if tx == "add a comment":
-            return n.get("bounds")
+            return n.get("bounds"), False
+        
+        # New UI: content-desc "Edit comment"
+        cd = (n.get("content_desc") or "").strip().lower()
+        if cd == "edit comment":
+            # If text is populated, assume it's filled and return None (success for verification)
+            if (n.get("text") or "").strip():
+                continue
+            return n.get("bounds"), True
+
+    # Fallback: content-desc "Add a comment"
     for n in nodes:
-        b = n.get("bounds")
-        if not b:
-            continue
-        tx = (n.get("text") or "").strip().lower()
-        if tx != "add a comment":
-            continue
-        return b
-    return None
+        cd = (n.get("content_desc") or "").strip().lower()
+        if cd == "add a comment":
+            return n.get("bounds"), False
+            
+    return None, False
 
 
 def _find_send_priority_like_bounds(nodes: List[Dict[str, Any]]) -> Optional[Tuple[int, int, int, int]]:
-    target_norm = _normalize_text_basic("send priority like with message")
+    # Support both "Send priority like" (no message/pre-type) and "Send priority like with message"
+    # Also "Send Like" for standard accounts.
+    targets = {
+        "send priority like with message",
+        "send priority like",
+        "send like",
+    }
     for n in nodes:
         cd = _normalize_text_basic(n.get("content_desc") or "")
-        if cd == target_norm:
-            return _find_enclosing_bounds(nodes, n.get("bounds"))
+        if cd in targets:
+            return n.get("bounds")
         tx = _normalize_text_basic(n.get("text") or "")
-        if tx == target_norm:
-            return _find_enclosing_bounds(nodes, n.get("bounds"))
+        if tx in targets:
+            return n.get("bounds")
     return None
 
 
@@ -1788,6 +1801,9 @@ def _seek_target_on_screen(
     steps = 0
 
     while steps < max_steps:
+        # Check for pending interrupts (Ctrl+C)
+        check_interrupt()
+
         found: Dict[str, Any] = {}
         if target_type == "prompt":
             prompt_bounds = _find_prompt_bounds_by_text(
@@ -1909,6 +1925,9 @@ def _seek_photo_by_index(
     last_hash: Optional[int] = None
 
     while steps < max_steps:
+        # Check for pending interrupts (Ctrl+C)
+        check_interrupt()
+
         photo_bounds = _find_primary_photo_bounds(nodes, scroll_area)
         if photo_bounds:
             nodes, offset, photo_bounds = _ensure_photo_square(
@@ -2016,6 +2035,9 @@ def _seek_photo_by_index_from_bottom(
     seen_hashes: List[int] = []
 
     while steps < max_steps:
+        # Check for pending interrupts (Ctrl+C)
+        check_interrupt()
+
         photo_bounds = _find_primary_photo_bounds(nodes, scroll_area)
         if photo_bounds:
             nodes, offset, photo_bounds = _ensure_photo_square(
@@ -2117,9 +2139,11 @@ def _capture_crop_from_device(
     out_name: str,
     width: int,
     height: int,
+    crops_dir: str = "",
 ) -> str:
     """
     Capture a full screencap and crop to bounds.
+    If crops_dir is provided, save there; otherwise use legacy images/crops/ location.
     """
     x1, y1, x2, y2 = bounds
     x1 = max(0, min(width - 1, x1))
@@ -2133,9 +2157,13 @@ def _capture_crop_from_device(
     img = Image.open(BytesIO(img_bytes)).convert("RGB")
     crop = img.crop((x1, y1, x2, y2))
 
-    os.makedirs(os.path.join("images", "crops"), exist_ok=True)
+    if crops_dir:
+        out_dir = crops_dir
+    else:
+        out_dir = os.path.join("images", "crops")
+    os.makedirs(out_dir, exist_ok=True)
     ts = int(time.time() * 1000)
-    out_path = os.path.join("images", "crops", f"{ts}_{out_name}.png")
+    out_path = os.path.join(out_dir, f"{ts}_{out_name}.png")
     crop.save(out_path)
     return out_path
 
@@ -2185,15 +2213,30 @@ def _find_visible_photo_bounds(
     return best
 
 
+def _safe_folder_name(text: str) -> str:
+    """Convert text to a safe folder name component."""
+    s = (text or "").strip()
+    # Replace problematic characters with underscore
+    import re
+    s = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", s)
+    # Replace multiple spaces/underscores with single underscore
+    s = re.sub(r"[\s_]+", "_", s)
+    return s.strip("_") or "unknown"
+
+
 def _scan_profile_single_pass(
     device,
     width: int,
     height: int,
     max_scrolls: int = 40,
     scroll_step_px: Optional[int] = None,
+    logs_dir: str = "logs",
+    timestamp: str = "",
 ) -> Dict[str, Any]:
     """
     Single-pass slow scan: extract text + biometrics, capture photos as they appear.
+    Creates a profile folder at logs_dir/{timestamp}_{Name}/ and saves all outputs there.
+    Returns the folder path in the result dict.
     """
     ui_map = {
         "prompts": [],
@@ -2225,6 +2268,15 @@ def _scan_profile_single_pass(
     if name:
         biometrics["Name"] = name
         _log(f"[BIOMETRICS] Name = {name}")
+    
+    # Create profile folder with timestamp and name
+    run_folder = ""
+    if timestamp:
+        folder_name = f"{timestamp}_{_safe_folder_name(name)}" if name else timestamp
+        run_folder = os.path.join(logs_dir, folder_name)
+        os.makedirs(run_folder, exist_ok=True)
+        _log(f"[SCAN] Created run folder: {run_folder}")
+    
     offset = 0
     did_hscroll = False
     no_move = 0
@@ -2234,6 +2286,8 @@ def _scan_profile_single_pass(
     high_overlap = 0
 
     while True:
+        # Check for pending interrupts (Ctrl+C)
+        check_interrupt()
 
         if time.time() - start_time > 150:
             _log("[SCROLL] Scan timeout reached (> 120s); returning collected data.")
@@ -2331,6 +2385,7 @@ def _scan_profile_single_pass(
                                         f"photo_{len(ui_map['photos'])+1}",
                                         width,
                                         height,
+                                        run_folder,
                                     )
                                     photo_paths.append(crop_path)
                                 except Exception as e:
@@ -2479,6 +2534,7 @@ def _scan_profile_single_pass(
         "scroll_offset": offset,
         "scroll_area": scroll_area,
         "nodes": nodes,
+        "run_folder": run_folder,
     }
 
 
