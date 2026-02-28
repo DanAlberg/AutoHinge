@@ -408,7 +408,8 @@ def LLM4_5_CRITIQUE(llm4_result: Dict[str, Any], extracted: Dict[str, Any], vari
         "- Does it sound like a real human wrote it?\n"
         "- Is it easy to reply to? (Either a unique question or witty, conversation provoking comment)\n"
         "- Does it actually reference something specific from the profile?\n"
-        "- Is it short and sweet - under 15 words, ideally under 10?\n\n"
+        "- Is it short and sweet - under 15 words, ideally under 10?\n"
+        f"- Does it contain any AI-cliche words? Banned words: {_banned_words_phrase()}.\n\n"
         "- Does it actually answer the question/prompt/etc.? Has it misunderstood the question or made another common, simple mistake?\n"
         "Rules:\n"
         "- Output JSON only, no emojis, no em dashes.\n"
@@ -466,8 +467,9 @@ def LLM5_SAFETY(extracted: Dict[str, Any], decision: str, chosen_text: str, scor
             "Criteria for High Achievement Profile (flag if ANY are met):\n"
             "1. The 'Eval signals' in the score summary show `job_band=T3` or `job_band=T4`.\n"
             "2. The 'Eval signals' show `university_elite=1` AND the job is in a high-trajectory field (e.g., tech, finance, law, medicine, consulting).\n\n"
-            "3. EDGE CASE: You judge from the profile that job_band may have been wrong and the subject could realistically be earning a 6-7+ figure income. \n\n"
+            "3. EDGE CASE: You judge from the profile that job_band may have been wrong and the subject could realistically be earning a 6 figure income. \n\n"
             "Your task is to apply these rules strictly. A standard professional like a doctor or lawyer should be flagged if their context suggests a high trajectory (e.g., elite university, T3+ job band). Do not flag T1/T2 jobs unless there's a strong compensating signal like an elite university.\n"
+            "The user also wants to be pinged for a manual review if they're from or studied in the USA, or have high short term/one night stand profile signals, either from the profile data or scoring table. Finally, also flag if they're Jewish.\n\n"
         )
         prompt += (
             "Output JSON only:\n"

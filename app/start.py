@@ -146,8 +146,9 @@ _INTERRUPT_KILL_WINDOW = 2.0  # seconds
 
 
 class RetryInteractionException(BaseException):
-    """Raised by signal handler to restart the decision/action loop."""
-    pass
+    """Raised to restart the decision/action loop."""
+    def __init__(self, new_decision=None):
+        self.new_decision = new_decision
 
 
 def _interrupt_beep() -> None:
@@ -372,6 +373,7 @@ def _choose_opening_message(
     llm4_result: Dict[str, Any],
     unrestricted: bool,
     timings: Optional[Dict[str, Any]] = None,
+    safety_intervention: bool = False,
 ) -> Tuple[Dict[str, Any], bool, bool]:
     # Prefer rewritten lines from LLM4 (post-critique), fallback to original openers from LLM3
     rewritten = _extract_rewritten_list(llm4_result)
@@ -389,7 +391,7 @@ def _choose_opening_message(
         updated["main_target_type"] = sel.get("main_target_type", updated.get("main_target_type", ""))
         updated["main_target_id"] = sel.get("main_target_id", updated.get("main_target_id", ""))
 
-    if unrestricted:
+    if unrestricted and not safety_intervention:
         return updated, True, False
 
     _alert_user_if_needed("Action Required: Review opening message")
@@ -403,6 +405,8 @@ def _choose_opening_message(
         if openers:
             prompt += ", or options"
         prompt += ", or redo, or override: "
+        if safety_intervention:
+            prompt = prompt.replace(": ", ", or reject, or long, or short: ")
         try:
             t0 = time.perf_counter()
             resp = input(prompt).strip().lower()
@@ -410,6 +414,13 @@ def _choose_opening_message(
                 timings["input_wait_s"] = timings.get("input_wait_s", 0.0) + (time.perf_counter() - t0)
         except Exception:
             return updated, False, False
+        if safety_intervention:
+            if resp in {"reject", "r"}:
+                raise RetryInteractionException(new_decision="reject")
+            if resp in {"long", "l"}:
+                raise RetryInteractionException(new_decision="long_pickup")
+            if resp in {"short", "s"}:
+                raise RetryInteractionException(new_decision="short_pickup")
         if resp in {"y", "yes"}:
             return updated, True, False
         if resp in {"n", "no", ""}:
@@ -422,16 +433,36 @@ def _choose_opening_message(
                 custom_text = input("Enter custom message (blank to cancel): ").strip()
                 if isinstance(timings, dict):
                     timings["input_wait_s"] = timings.get("input_wait_s", 0.0) + (time.perf_counter() - t0)
+                if not custom_text:
+                    continue
+                t0 = time.perf_counter()
+                custom_target_id = input("Enter target ID (e.g. photo_2, prompt_1, poll_1_option_1) (blank=no target): ").strip().lower()
+                if isinstance(timings, dict):
+                    timings["input_wait_s"] = timings.get("input_wait_s", 0.0) + (time.perf_counter() - t0)
             except Exception:
                 return updated, False, False
-            if not custom_text:
-                continue
             updated["chosen_text"] = custom_text
             updated["chosen_index"] = None
             updated["rationale"] = "override"
+            if custom_target_id:
+                updated["main_target_id"] = custom_target_id
+                target_type = ""
+                if custom_target_id.startswith("photo_"):
+                    target_type = "photo"
+                elif custom_target_id.startswith("prompt_"):
+                    target_type = "prompt"
+                elif custom_target_id.startswith("poll_"):
+                    target_type = "poll"
+                updated["main_target_type"] = target_type
+            else:
+                updated["main_target_id"] = ""
+                updated["main_target_type"] = ""
             continue
         if resp == "options" and openers:
             for i, o in enumerate(openers, start=1):
+                tgt = o.get("main_target_id") or ""
+
+
                 tgt = o.get("main_target_id") or ""
                 print(f"[SEND] {i}. ({tgt}) {o.get('text')}")
             try:
@@ -695,105 +726,7 @@ def _write_sent_message_record(
     llm4_result: Optional[Dict[str, Any]],
     out_path: str,
 ) -> None:
-    comment_text = (target_action.get("comment_text") or "").strip()
-    if not comment_text:
-        return
-    log_dir = os.path.dirname(out_path) or "logs"
-    temp_dir = os.path.join(log_dir, "temp")
-    images_dir = os.path.join(temp_dir, "images")
-    try:
-        os.makedirs(images_dir, exist_ok=True)
-    except Exception:
-        return
-
-    meta = log_state.get("meta") if isinstance(log_state, dict) else {}
-    ts = meta.get("timestamp") if isinstance(meta, dict) else ""
-    bio = log_state.get("biometrics") if isinstance(log_state, dict) else {}
-    name = ""
-    if isinstance(bio, dict):
-        name = str(bio.get("Name") or "")
-    if not name and isinstance(extracted, dict):
-        core = extracted.get("Core Biometrics (Objective)") or {}
-        if isinstance(core, dict):
-            name = str(core.get("Name") or "")
-
-    target_id = (target_action.get("target_id") or "").strip()
-    target_type = (target_action.get("type") or "").strip()
-    if not target_id and isinstance(llm4_result, dict):
-        target_id = (llm4_result.get("main_target_id") or "").strip()
-    if not target_type and isinstance(llm4_result, dict):
-        target_type = (llm4_result.get("main_target_type") or "").strip()
-    if not target_type and target_id:
-        if target_id.startswith("prompt_"):
-            target_type = "prompt"
-        elif target_id.startswith("photo_"):
-            target_type = "photo"
-        elif target_id.startswith("poll_"):
-            target_type = "poll"
-
-    record: Dict[str, Any] = {
-        "log_file": os.path.basename(out_path),
-        "timestamp": ts,
-        "name": name,
-        "message": comment_text,
-        "target_id": target_id,
-        "target_type": target_type,
-    }
-
-    prompts = _collect_prompt_map(extracted)
-    photos = _collect_photo_map(extracted)
-    poll = _collect_poll(extracted)
-
-    if target_type == "prompt" and target_id in prompts:
-        p = prompts[target_id]
-        record["linked_prompt"] = {
-            "prompt": p.get("prompt", ""),
-            "answer": p.get("answer", ""),
-        }
-    elif target_type == "photo" and target_id in photos:
-        p = photos[target_id]
-        src = p.get("source_file") or ""
-        record["linked_photo"] = {
-            "description": p.get("description", ""),
-            "source_file": src,
-        }
-        src_path = src
-        if src and not os.path.isabs(src_path):
-            src_path = os.path.join(os.path.dirname(__file__), src)
-        if src_path and os.path.isfile(src_path):
-            dest_name = f"{_safe_name(ts)}_{_safe_name(name)}_{_safe_name(target_id)}_{os.path.basename(src_path)}"
-            dest_path = os.path.join(images_dir, dest_name)
-            try:
-                shutil.copy2(src_path, dest_path)
-                record["linked_photo"]["copied_file"] = os.path.relpath(dest_path, log_dir)
-            except Exception:
-                record["linked_photo"]["copied_file"] = ""
-    elif target_type == "poll" and poll:
-        answers = []
-        for a in poll.get("answers") or []:
-            if isinstance(a, dict):
-                answers.append(a.get("text", ""))
-        record["linked_poll"] = {
-            "question": poll.get("question", ""),
-            "answers": answers,
-        }
-
-    out_file = os.path.join(temp_dir, "sent_messages.json")
-    records: List[Dict[str, Any]] = []
-    if os.path.isfile(out_file):
-        try:
-            with open(out_file, "r", encoding="utf-8") as f:
-                existing = json.load(f)
-            if isinstance(existing, list):
-                records = existing
-        except Exception:
-            records = []
-    records.append(record)
-    try:
-        with open(out_file, "w", encoding="utf-8") as f:
-            json.dump(records, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+    return
 
 
 def _run_single_profile(
@@ -1156,9 +1089,10 @@ def _run_single_profile(
                             else:
                                 print(f"[SAFETY] 🛑 INTERVENTION NEEDED: {reason}")
                                 _alert_user(f"Safety Intervention Needed:\n\n{reason}")
-                            # Downgrade to manual mode for this interaction
+                            
+                            # Enter manual control with added safety options (Reject/Long/Short)
                             llm4_result, send_approved, redo_requested = _choose_opening_message(
-                                llm3_result, llm4_result, unrestricted=False, timings=timings
+                                llm3_result, llm4_result, unrestricted=False, timings=timings, safety_intervention=True
                             )
                         else:
                             print("[SAFETY] ✅ Approved")
@@ -1426,7 +1360,25 @@ def _run_single_profile(
                         else:
                             print(f"[SAFETY] 🛑 INTERVENTION NEEDED (Unfair Rejection?): {reason}")
                             _alert_user(f"Safety Intervention Needed (Rejection):\n\n{reason}")
-                        force_manual_reject = True
+                        
+                        print("\n[SAFETY] Intervention Options:")
+                        print("1. Confirm Reject (y)")
+                        print("2. Switch to Long Pickup (l)")
+                        print("3. Switch to Short Pickup (s)")
+
+                        while True:
+                            try:
+                                choice = input("Select option: ").strip().lower()
+                            except Exception:
+                                choice = ""
+
+                            if choice in {"1", "y", "yes", "reject", ""}:
+                                force_manual_reject = False
+                                break
+                            elif choice in {"2", "l", "long"}:
+                                raise RetryInteractionException(new_decision="long_pickup")
+                            elif choice in {"3", "s", "short"}:
+                                raise RetryInteractionException(new_decision="short_pickup")
                     else:
                         print("[SAFETY] ✅ Rejection Approved")
 
@@ -1580,8 +1532,12 @@ def _run_single_profile(
             
             # If we reached here without exception, break the retry loop
             break
-        except RetryInteractionException:
-            print("\n[UNDO] Reverting to decision phase...")
+        except RetryInteractionException as e:
+            if getattr(e, "new_decision", None):
+                decision = e.new_decision
+                print(f"\n[UNDO] Switching strategy to: {decision}")
+            else:
+                print("\n[UNDO] Reverting to decision phase...")
             # Loop continues, re-running decision/action logic
             continue
 

@@ -206,6 +206,8 @@ def init_db(db_path: Optional[str] = None) -> None:
             "opening_messages_json TEXT",
             "opening_pick_json TEXT",
             "opening_pick_text TEXT",
+            "opening_pick_target_id TEXT",
+            "opening_pick_target_type TEXT",
             "verdict TEXT",
             "matched INTEGER DEFAULT 0",
             "match_time TEXT",
@@ -329,6 +331,8 @@ def rebuild_profiles_table(db_path: Optional[str] = None) -> None:
             ("opening_messages_json", "TEXT"),
             ("opening_pick_json", "TEXT"),
             ("opening_pick_text", "TEXT"),
+            ("opening_pick_target_id", "TEXT"),
+            ("opening_pick_target_type", "TEXT"),
             ("verdict", "TEXT"),
             ("matched", "INTEGER DEFAULT 0"),
             ("match_time", "TEXT"),
@@ -407,6 +411,8 @@ def update_profile_opening_pick(
     Persist the opening pick:
     - opening_pick_json: full JSON result blob
     - opening_pick_text: the chosen_text extracted for easy SQL analysis
+    - opening_pick_target_id: the target ID for the opener
+    - opening_pick_target_type: the target type for the opener
     """
     try:
         import json
@@ -414,6 +420,8 @@ def update_profile_opening_pick(
     except Exception:
         json_text = "{}"
     chosen_text = ""
+    target_id = ""
+    target_type = ""
     try:
         if isinstance(result, dict):
             ct = result.get("chosen_text")
@@ -441,15 +449,26 @@ def update_profile_opening_pick(
                     rt = top_pick.get("text")
                     if isinstance(rt, str):
                         chosen_text = rt.strip()
+
+            # Extract target info
+            tid = result.get("main_target_id")
+            if isinstance(tid, str):
+                target_id = tid.strip()
+
+            ttype = result.get("main_target_type")
+            if isinstance(ttype, str):
+                target_type = ttype.strip()
     except Exception:
         chosen_text = ""
+        target_id = ""
+        target_type = ""
     db_path = db_path or get_db_path()
     con = sqlite3.connect(db_path)
     try:
         cur = con.cursor()
         cur.execute(
-            "UPDATE profiles SET opening_pick_json = ?, opening_pick_text = ? WHERE id = ?",
-            (json_text, chosen_text, int(profile_id))
+            "UPDATE profiles SET opening_pick_json = ?, opening_pick_text = ?, opening_pick_target_id = ?, opening_pick_target_type = ? WHERE id = ?",
+            (json_text, chosen_text, target_id, target_type, int(profile_id))
         )
         con.commit()
     finally:
