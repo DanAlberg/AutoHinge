@@ -35,7 +35,21 @@ def _parse_match_time(raw: str) -> Optional[str]:
         except Exception:
             pass
 
+    # Try various timestamp formats
     formats_with_year = [
+        # British date formats (DD/MM)
+        "%d/%m/%Y %H:%M",
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%y %H:%M",
+        "%d/%m/%y %H:%M:%S",
+        "%d/%m %H:%M",
+        "%d-%m-%Y %H:%M",
+        "%d-%m-%Y %H:%M:%S",
+        "%d-%m-%y %H:%M",
+        "%d-%m-%y %H:%M:%S",
+        "%d-%m %H:%M",
+        
+        # Standard formats
         "%Y-%m-%d %H:%M",
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%dT%H:%M",

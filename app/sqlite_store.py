@@ -211,6 +211,11 @@ def init_db(db_path: Optional[str] = None) -> None:
             "verdict TEXT",
             "matched INTEGER DEFAULT 0",
             "match_time TEXT",
+            # New columns for match handling
+            "status TEXT",
+            "last_activity TEXT",
+            "chat_log TEXT",
+            "milestones TEXT",
             # New columns for critique pipeline
             "opening_critiques_json TEXT",
             "humanity_score INTEGER",
