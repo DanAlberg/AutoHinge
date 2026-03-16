@@ -60,104 +60,104 @@ def init_db(db_path: Optional[str] = None) -> None:
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS profiles (
-                id INTEGER PRIMARY KEY,
+                id INTEGER PRIMARY KEY, -- Auto-incrementing unique identifier for each profile
                 -- Core extracted fields
-                Name TEXT NOT NULL,
-                Gender TEXT,
-                Sexuality TEXT,
-                Age INTEGER NOT NULL,
-                Height_cm INTEGER NOT NULL,
-                Location TEXT,
-                Active_status TEXT,
-                Ethnicity TEXT,
-                Children TEXT,
-                Family_plans TEXT,
-                Covid_vaccine TEXT,
-                Pets TEXT,
-                Zodiac_Sign TEXT,
-                Job_title TEXT,
-                University TEXT,
-                Religious_Beliefs TEXT,
-                Home_town TEXT,
-                Politics TEXT,
-                Languages_spoken TEXT,
-                Dating_Intentions TEXT,
-                Relationship_type TEXT,
-                Drinking TEXT,
-                Smoking TEXT,
-                Marijuana TEXT,
-                Drugs TEXT,
-                Biometrics_Other_Text TEXT,
-                prompt_1 TEXT,
-                answer_1 TEXT,
-                prompt_2 TEXT,
-                answer_2 TEXT,
-                prompt_3 TEXT,
-                answer_3 TEXT,
-                Poll_question TEXT,
-                Poll_answer_1 TEXT,
-                Poll_answer_2 TEXT,
-                Poll_answer_3 TEXT,
-                Other_text TEXT,
-                Media_description TEXT,
-                Photo1_desc TEXT,
-                Photo2_desc TEXT,
-                Photo3_desc TEXT,
-                Photo4_desc TEXT,
-                Photo5_desc TEXT,
-                Photo6_desc TEXT,
-                Face_Visibility_Quality TEXT,
-                Photo_Authenticity_Editing_Level TEXT,
-                Apparent_Body_Fat_Level TEXT,
-                Profile_Distinctiveness TEXT,
-                Apparent_Build_Category TEXT,
-                Apparent_Skin_Tone TEXT,
-                Apparent_Ethnic_Features TEXT,
-                Hair_Color TEXT,
-                Facial_Symmetry_Level TEXT,
-                Indicators_of_Fitness_or_Lifestyle TEXT,
-                Overall_Visual_Appeal_Vibe TEXT,
-                Apparent_Age_Years INTEGER,
-                Attire_and_Style_Indicators TEXT,
-                Body_Language_and_Expression TEXT,
-                Visible_Enhancements_or_Features TEXT,
-                Apparent_Chest_Proportions TEXT,
-                Apparent_Attractiveness_Tier TEXT,
-                Reasoning_for_attractiveness_tier TEXT,
-                Facial_Proportion_Balance TEXT,
-                Grooming_Effort_Level TEXT,
-                Presentation_Red_Flags TEXT,
-                Visible_Tattoo_Level TEXT,
-                Visible_Piercing_Level TEXT,
-                Short_Term_Hookup_Orientation_Signals TEXT,
+                Name TEXT NOT NULL, -- Profile name used for deduplication
+                Gender TEXT, -- Self-identified gender from profile
+                Sexuality TEXT, -- Sexual orientation stated in profile
+                Age INTEGER NOT NULL, -- Profile age used for deduplication
+                Height_cm INTEGER NOT NULL, -- Height in centimeters used for deduplication
+                Location TEXT, -- Geographic location from profile
+                Active_status TEXT, -- Profile activity status indicator
+                Ethnicity TEXT, -- Explicitly stated ethnicity
+                Children TEXT, -- Children status or attitude toward kids
+                Family_plans TEXT, -- Future family planning intentions
+                Covid_vaccine TEXT, -- COVID-19 vaccination status
+                Pets TEXT, -- Pet ownership or attitude toward animals
+                Zodiac_Sign TEXT, -- Astrological sign from profile
+                Job_title TEXT, -- Professional occupation/job title
+                University TEXT, -- Educational institution attended
+                Religious_Beliefs TEXT, -- Religious views or beliefs
+                Home_town TEXT, -- Hometown or origin city
+                Politics TEXT, -- Political views or affiliations
+                Languages_spoken TEXT, -- Languages the person speaks
+                Dating_Intentions TEXT, -- Relationship goals and intentions
+                Relationship_type TEXT, -- Preferred relationship structure
+                Drinking TEXT, -- Alcohol consumption habits
+                Smoking TEXT, -- Tobacco smoking habits
+                Marijuana TEXT, -- Marijuana usage habits
+                Drugs TEXT, -- Other drug usage habits
+                Biometrics_Other_Text TEXT, -- Additional biometric information not covered elsewhere
+                prompt_1 TEXT, -- First profile prompt question
+                answer_1 TEXT, -- Answer to first profile prompt
+                prompt_2 TEXT, -- Second profile prompt question
+                answer_2 TEXT, -- Answer to second profile prompt
+                prompt_3 TEXT, -- Third profile prompt question
+                answer_3 TEXT, -- Answer to third profile prompt
+                Poll_question TEXT, -- Poll question text
+                Poll_answer_1 TEXT, -- First poll answer option
+                Poll_answer_2 TEXT, -- Second poll answer option
+                Poll_answer_3 TEXT, -- Third poll answer option
+                Other_text TEXT, -- Additional text content not covered by other fields
+                Media_description TEXT, -- Description of non-photo media (videos, voice notes)
+                Photo1_desc TEXT, -- Description of first profile photo
+                Photo2_desc TEXT, -- Description of second profile photo
+                Photo3_desc TEXT, -- Description of third profile photo
+                Photo4_desc TEXT, -- Description of fourth profile photo
+                Photo5_desc TEXT, -- Description of fifth profile photo
+                Photo6_desc TEXT, -- Description of sixth profile photo
+                Face_Visibility_Quality TEXT, -- Assessment of how clearly face is visible in photos
+                Photo_Authenticity_Editing_Level TEXT, -- Level of photo editing or filters detected
+                Apparent_Body_Fat_Level TEXT, -- Visual assessment of body fat percentage
+                Profile_Distinctiveness TEXT, -- How unique or distinctive the profile appears
+                Apparent_Build_Category TEXT, -- Body type classification (slender, athletic, etc.)
+                Apparent_Skin_Tone TEXT, -- Visual skin tone description
+                Apparent_Ethnic_Features TEXT, -- Visual ethnic characteristics observed
+                Hair_Color TEXT, -- Hair color from photos
+                Facial_Symmetry_Level TEXT, -- Assessment of facial symmetry
+                Indicators_of_Fitness_or_Lifestyle TEXT, -- Visual signs of fitness or active lifestyle
+                Overall_Visual_Appeal_Vibe TEXT, -- Overall attractiveness and appeal assessment
+                Apparent_Age_Years INTEGER, -- Visually estimated age in years
+                Attire_and_Style_Indicators TEXT, -- Clothing style and fashion sense indicators
+                Body_Language_and_Expression TEXT, -- Body language and facial expression analysis
+                Visible_Enhancements_or_Features TEXT, -- Visible modifications like makeup, glasses, etc.
+                Apparent_Chest_Proportions TEXT, -- Visual assessment of chest size/proportions
+                Apparent_Attractiveness_Tier TEXT, -- Attractiveness classification tier
+                Reasoning_for_attractiveness_tier TEXT, -- Explanation for attractiveness tier assignment
+                Facial_Proportion_Balance TEXT, -- Assessment of facial feature proportions
+                Grooming_Effort_Level TEXT, -- Level of grooming and personal care effort
+                Presentation_Red_Flags TEXT, -- Negative presentation indicators or concerns
+                Visible_Tattoo_Level TEXT, -- Visibility level of tattoos
+                Visible_Piercing_Level TEXT, -- Visibility level of piercings
+                Short_Term_Hookup_Orientation_Signals TEXT, -- Indicators of casual relationship preferences
                 -- Enrichment (profile_eval)
-                home_country_iso TEXT,
-                home_country_confidence REAL,
-                home_country_modifier INTEGER,
-                job_normalized_title TEXT,
-                job_est_salary_gbp INTEGER,
-                job_band TEXT,
-                job_confidence REAL,
-                job_band_reason TEXT,
-                job_modifier INTEGER,
-                university_elite INTEGER,
-                matched_university_name TEXT,
-                university_modifier INTEGER,
+                home_country_iso TEXT, -- ISO country code derived from hometown
+                home_country_confidence REAL, -- Confidence score in country resolution (0.0-1.0)
+                home_country_modifier INTEGER, -- Country-based scoring modifier value
+                job_normalized_title TEXT, -- Standardized job title for analysis
+                job_est_salary_gbp INTEGER, -- Estimated annual salary in British pounds
+                job_band TEXT, -- Job earning potential tier (T0-T4)
+                job_confidence REAL, -- Confidence in job assessment (0.0-1.0)
+                job_band_reason TEXT, -- Explanation for job band assignment
+                job_modifier INTEGER, -- Job-based scoring modifier value
+                university_elite INTEGER, -- Flag indicating elite university (1) or not (0)
+                matched_university_name TEXT, -- Canonical name of matched elite university
+                university_modifier INTEGER, -- University-based scoring modifier value
                 -- Derived
-                long_score INTEGER,
-                short_score INTEGER,
-                score_breakdown TEXT,
-                timestamp TEXT,
+                long_score INTEGER, -- Long-term relationship compatibility score
+                short_score INTEGER, -- Short-term relationship compatibility score
+                score_breakdown TEXT, -- Detailed explanation of scoring calculations
+                timestamp TEXT, -- ISO timestamp when profile was processed
                 -- Opening messages (JSON blob of 10 generated openers)
-                opening_messages_json TEXT,
+                opening_messages_json TEXT, -- JSON array of generated opening messages
                 -- Opening pick (full JSON of selection) and chosen text for analysis
-                opening_pick_json TEXT,
-                opening_pick_text TEXT,
+                opening_pick_json TEXT, -- JSON object containing selected opening message details
+                opening_pick_text TEXT, -- Text of the chosen opening message
                 -- Verdict (LIKE/DISLIKE)
-                verdict TEXT,
+                verdict TEXT, -- Final decision on profile (LIKE/DISLIKE)
                 -- Match logging
-                matched INTEGER DEFAULT 0,
-                match_time TEXT
+                matched INTEGER DEFAULT 0, -- Match status flag (0 = not matched, 1 = matched)
+                match_time TEXT -- ISO timestamp when match occurred
             );
             """
         )

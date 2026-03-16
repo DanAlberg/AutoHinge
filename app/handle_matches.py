@@ -156,7 +156,7 @@ def _get_conversation_starter(profile_id: int) -> List[Dict[str, Any]]:
         a1, a2, a3, pick_text, target_id, opener_ts = row
         
         starter_content = ""
-        if target_id:
+        if target_id and target_id.startswith("prompt"):
             idx = target_id.split('_')[-1]
             starter_content = {'1': a1, '2': a2, '3': a3}.get(idx, "")
             
@@ -194,9 +194,13 @@ def _extract_messages_from_xml(xml_content: str, match_name: str) -> List[Dict[s
         if text and re.search(r'\d{1,2}:\d{2}', text) and text not in ["Profile", "Chat", "Sent"]:
             nodes_to_sort.append({'type': 'TS', 'val': text, 'y': bounds[1]})
         
-        # 2. Capture Chat Bubbles (Strictly prefixed)
-        is_sent = desc.lower().startswith("you:")
-        is_received = desc.lower().startswith(f"{match_name.lower()}:")
+        # 2. Capture Chat Bubbles
+        d_lower = desc.strip().lower()
+        name_key = match_name.lower().strip()
+        
+        is_sent = d_lower.startswith("you:")
+        # Check for name prefix followed by a colon within a 3-character window
+        is_received = not is_sent and d_lower.startswith(name_key) and ":" in d_lower[:len(name_key)+3]
         
         if is_sent or is_received:
             nodes_to_sort.append({

@@ -297,6 +297,10 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     }:
         record("Visual Analysis", "Apparent Ethnic Features", ethnic, +5)
 
+    elif ethnic_norm == _norm_value("Black/African-presenting"):
+        record("Visual Analysis", "Apparent Ethnic Features", ethnic, -50)
+
+
     chest = visual_val("Apparent Chest Proportions")
     chest_norm = _norm_value(chest)
     if chest_norm == _norm_value("Petite/small/narrow"):
