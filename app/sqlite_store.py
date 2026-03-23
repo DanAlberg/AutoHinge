@@ -155,6 +155,8 @@ def init_db(db_path: Optional[str] = None) -> None:
                 opening_pick_text TEXT, -- Text of the chosen opening message
                 -- Verdict (LIKE/DISLIKE)
                 verdict TEXT, -- Final decision on profile (LIKE/DISLIKE)
+                -- Manual rating (temporary feature)
+                dan_rating INTEGER,
                 -- Match logging
                 matched INTEGER DEFAULT 0, -- Match status flag (0 = not matched, 1 = matched)
                 match_time TEXT -- ISO timestamp when match occurred
@@ -209,6 +211,7 @@ def init_db(db_path: Optional[str] = None) -> None:
             "opening_pick_target_id TEXT",
             "opening_pick_target_type TEXT",
             "verdict TEXT",
+            "dan_rating INTEGER",
             "matched INTEGER DEFAULT 0",
             "match_time TEXT",
             # New columns for match handling
@@ -339,6 +342,7 @@ def rebuild_profiles_table(db_path: Optional[str] = None) -> None:
             ("opening_pick_target_id", "TEXT"),
             ("opening_pick_target_type", "TEXT"),
             ("verdict", "TEXT"),
+            ("dan_rating", "INTEGER"),
             ("matched", "INTEGER DEFAULT 0"),
             ("match_time", "TEXT"),
         ]

@@ -421,9 +421,9 @@ def _choose_opening_message(
                 raise RetryInteractionException(new_decision="long_pickup")
             if resp in {"short", "s"}:
                 raise RetryInteractionException(new_decision="short_pickup")
-        if resp in {"y", "yes"}:
+        if resp in {"y", "yes", ""}:
             return updated, True, False
-        if resp in {"n", "no", ""}:
+        if resp in {"n", "no"}:
             return updated, False, False
         if resp == "redo":
             return updated, False, True
@@ -847,6 +847,14 @@ def _run_single_profile(
         meta["images_paths"] = llm1_meta.get("images_paths", []) or photo_paths
         log_state["meta"] = meta
         _write_run_log(out_path, log_state)
+
+
+        #MANUAL RATING - CAN BE REMOVED WHEN DONE WITH IT
+        dan_rating = None
+        if not args.unrestricted:
+            from manual_scoring import collect_manual_rating, update_dan_rating
+            dan_rating = collect_manual_rating()
+
     extracted = _build_extracted_profile(biometrics, ui_map, llm1_result, llm1_meta)
     if log_state:
         log_state["extracted_profile"] = extracted
@@ -1386,8 +1394,9 @@ def _run_single_profile(
                 post_nodes = _parse_ui_nodes(post_xml)
                 dislike_bounds = _find_dislike_bounds(post_nodes)
                 if dislike_bounds:
-                    use_unrestricted = args.unrestricted and not force_manual_reject
-                    if _confirm_action("dislike", use_unrestricted, timings):
+                    #use_unrestricted = args.unrestricted and not force_manual_reject
+                    #if _confirm_action("dislike", use_unrestricted, timings):
+                    if _confirm_action("dislike", True, timings):
                         try:
                             tap_x, tap_y = _tap_bounds(device, dislike_bounds, width, height)
                             target_action = {"action": "dislike", "tap_coords": [tap_x, tap_y]}
@@ -1521,6 +1530,8 @@ def _run_single_profile(
                     )
                     if pid is not None:
                         update_profile_verdict(pid, decision)
+                        if dan_rating is not None:
+                            update_dan_rating(pid, dan_rating)
                         if isinstance(llm3_result, dict) and llm3_result:
                             update_profile_opening_messages_json(pid, llm3_result)
                         if isinstance(llm4_result, dict) and llm4_result:

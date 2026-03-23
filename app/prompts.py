@@ -2,7 +2,7 @@ import json
 from typing import Any, Dict
 
 # Banned words for AI clichés - add/remove as needed
-BANNED_WORDS = ["trouble", "mischief", "chaos", "ruin my life", "danger", "dangerous", "main character", "elite", "mob wife", "vibe", "heist", "paparazzi", "apres ski"]
+BANNED_WORDS = ["trouble", "mischief", "chaos", "ruin my life", "danger", "dangerous", "main character", "elite", "mob wife", "vibe", "heist", "paparazzi", "apres ski, iconic"]
 
 def _banned_words_phrase() -> str:
     """Returns the banned words formatted for prompt inclusion."""
