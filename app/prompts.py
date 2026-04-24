@@ -8,6 +8,14 @@ def _banned_words_phrase() -> str:
     """Returns the banned words formatted for prompt inclusion."""
     return "(" + ", ".join(f"'{w}'" for w in BANNED_WORDS) + ")"
 
+def LLM_AESTHETIC_EVAL() -> str:
+    """Prompt for zero-shot VLM aesthetic evaluation mapping to a 1.0 - 5.0 scale."""
+    return (
+        "Rate the subject's visual attractiveness on a continuous scale from 1.0 to 5.0. "
+        "Output absolutely nothing except the raw float number."
+    )
+
+
 def LLM1_VISUAL() -> str:
     """
     Visual-only prompt for LLM1: describe photos + infer visual traits.

@@ -869,7 +869,9 @@ def upsert_profile_flat(
         )
         con.commit()
         if cur.rowcount == 0:
-            return None
+            cur.execute("SELECT id FROM profiles WHERE Name = :Name AND Age = :Age AND Height_cm = :Height_cm", row)
+            existing = cur.fetchone()
+            return existing[0] if existing else None
         return cur.lastrowid
     finally:
         con.close()

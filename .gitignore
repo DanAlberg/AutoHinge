@@ -20,3 +20,13 @@ images/
 *.db-shm
 *.db-wal
 *.db
+
+# Machine Learning / Computer Vision Pipeline outputs
+app/ml/processed_faces/
+app/ml/test_bbox_output/
+app/ml/labels.csv
+app/ml/*.tflite
+app/ml/*.pkl
+app/ml/*.npy
+app/ml/zsllm_test_results.csv
+ml/diagnostics/

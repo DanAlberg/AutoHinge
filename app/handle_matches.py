@@ -59,29 +59,63 @@ def _parse_timestamp(raw: str) -> Optional[str]:
 
 def _calculate_status(chat_log: List[Dict[str, Any]], milestones: List[Dict[str, Any]]) -> str:
     if milestones:
-        last_milestone = milestones[-1]
+        # Sort milestones chronologically in case they are out of order
+        sorted_milestones = sorted(milestones, key=lambda x: x['timestamp'])
+        last_milestone = sorted_milestones[-1]
         m_type = last_milestone.get("event")
         if m_type in ["unmatched_by_her", "unmatched_by_me", "ended"]:
             return "ended"
         if m_type == "moved_off_hinge":
             return "moved_off_hinge"
+        if m_type == "stale":
+            return "stale"
 
     all_events = chat_log + milestones
     if all_events:
         all_events.sort(key=lambda x: x['timestamp'])
-        last_ts = all_events[-1]['timestamp']
-        try:
-            last_dt = datetime.fromisoformat(last_ts.replace('Z', '+00:00'))
-            if (datetime.now().timestamp() - last_dt.timestamp()) > (14 * 86400):
-                return "stale"
-        except Exception:
-            pass
+        # If the absolute last event (even chat) is stale, or if 14 days passed
+        # Find the last chat message to determine if it's stale organically
+        if chat_log:
+            sorted_chat = sorted(chat_log, key=lambda x: x['timestamp'])
+            last_chat_ts = sorted_chat[-1]['timestamp']
+            try:
+                last_dt = datetime.fromisoformat(last_chat_ts.replace('Z', '+00:00'))
+                if (datetime.now().timestamp() - last_dt.timestamp()) > (14 * 86400):
+                    return "stale"
+            except Exception:
+                pass
 
     if chat_log:
-        last_msg = chat_log[-1]
+        sorted_chat = sorted(chat_log, key=lambda x: x['timestamp'])
+        last_msg = sorted_chat[-1]
         return "her_turn" if last_msg.get("event") == "message_sent" else "my_turn"
 
     return "active"
+
+def _recalculate_all_statuses() -> None:
+    """Self-healing function to recalculate the status of all active profiles."""
+    db_path = get_db_path()
+    con = sqlite3.connect(db_path)
+    try:
+        cur = con.cursor()
+        cur.execute("SELECT id, chat_log, milestones, status FROM profiles WHERE matched = 1")
+        rows = cur.fetchall()
+        
+        updates = []
+        for r in rows:
+            p_id, c_log_str, m_log_str, current_status = r
+            chat_log = json.loads(c_log_str) if c_log_str else []
+            milestones = json.loads(m_log_str) if m_log_str else []
+            
+            new_status = _calculate_status(chat_log, milestones)
+            if new_status != current_status:
+                updates.append((new_status, p_id))
+                
+        if updates:
+            cur.executemany("UPDATE profiles SET status = ? WHERE id = ?", updates)
+            con.commit()
+    finally:
+        con.close()
 
 def _update_profile_data(profile_id: int, chat_log: List[Dict[str, Any]] = None, milestones: List[Dict[str, Any]] = None):
     db_path = get_db_path()
@@ -406,7 +440,7 @@ def _fetch_all_matched_profiles(limit: int = 100) -> List[Dict[str, Any]]:
     try:
         cur = con.cursor()
         cur.execute("""
-            SELECT id, Name, Age, Height_cm, timestamp, verdict, match_time, chat_log, milestones
+            SELECT id, Name, Age, Height_cm, timestamp, verdict, match_time, chat_log, milestones, status, last_activity
             FROM profiles 
             WHERE matched = 1
             ORDER BY match_time DESC, timestamp DESC
@@ -416,14 +450,57 @@ def _fetch_all_matched_profiles(limit: int = 100) -> List[Dict[str, Any]]:
         return [
             {
                 "id": r[0], "name": r[1], "age": r[2], "height_cm": r[3], "timestamp": r[4], 
-                "verdict": r[5], "match_time": r[6], "chat_log": r[7], "milestones": r[8]
+                "verdict": r[5], "match_time": r[6], "chat_log": r[7], "milestones": r[8],
+                "status": r[9], "last_activity": r[10]
             } for r in rows
         ]
     finally:
         con.close()
 
-def _print_profiles(rows: List[Dict[str, Any]], show_events: bool = False) -> None:
-    for idx, r in enumerate(rows, start=1):
+def _fetch_active_profiles(limit: int = 50) -> List[Dict[str, Any]]:
+    db_path = get_db_path()
+    con = sqlite3.connect(db_path)
+    try:
+        cur = con.cursor()
+        cur.execute("""
+            SELECT id, Name, Age, Height_cm, timestamp, verdict, match_time, status, last_activity, chat_log, milestones
+            FROM profiles 
+            WHERE matched = 1 AND status IN ('my_turn', 'her_turn', 'active')
+            AND (chat_log IS NOT NULL AND chat_log != '' AND chat_log != '[]')
+            ORDER BY last_activity DESC
+            LIMIT ?
+        """, (limit,))
+        rows = cur.fetchall()
+        return [
+            {
+                "id": r[0], "name": r[1], "age": r[2], "height_cm": r[3], "timestamp": r[4], 
+                "verdict": r[5], "match_time": r[6], "status": r[7], "last_activity": r[8],
+                "chat_log": r[9], "milestones": r[10]
+            } for r in rows
+        ]
+    finally:
+        con.close()
+
+def _print_profiles(rows: List[Dict[str, Any]], show_events: bool = False, start_idx: int = 1) -> None:
+    for idx, r in enumerate(rows, start=start_idx):
+        info = []
+        info.append(f"id={r['id']}")
+        info.append(r['name'])
+        info.append(f"age={r['age']}")
+        
+        status = r.get("status")
+        if status == "my_turn":
+            info.append("[YOUR TURN]")
+        elif status == "her_turn":
+            info.append("[HER TURN]")
+        
+        last_act = r.get("last_activity")
+        if last_act:
+            try:
+                dt = datetime.fromisoformat(last_act.replace('Z', '+00:00'))
+                info.append(f"Last: {dt.strftime('%d %b %H:%M')}")
+            except Exception: pass
+
         events_info = ""
         if show_events:
             c_log = json.loads(r.get("chat_log") or "[]")
@@ -431,10 +508,7 @@ def _print_profiles(rows: List[Dict[str, Any]], show_events: bool = False) -> No
             if c_log or m_log:
                 events_info = f" | Chat: {len(c_log)} | Milestones: {len(m_log)}"
         
-        print(
-            f"[{idx}] id={r['id']} | {r['name']} | age={r['age']} | "
-            f"height_cm={r['height_cm']} | matched_at={r['match_time'] or 'N/A'} | verdict={r['verdict']}{events_info}"
-        )
+        print(f"[{idx}] " + " | ".join(info) + events_info)
 
 def _select_profile(rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not rows: return None
@@ -627,12 +701,27 @@ def _find_profile_by_name(name_query: str) -> Optional[Dict[str, Any]]:
 def _interactive_menu() -> None:
     print("\n" + "="*60 + "\nMATCH HANDLING SYSTEM\n" + "="*60)
     
-    # 1. Show the "Recently Matched / No Events" list for context
+    # 1. Fetch relevant profiles
     new_profiles = _fetch_matched_profiles_with_no_events()
-    if new_profiles:
-        print(f"\nProfiles with no events:")
-        _print_profiles(new_profiles)
+    active_profiles = _fetch_active_profiles()
     
+    # Combined mapping for numeric selection
+    combined_list = []
+    
+    if new_profiles:
+        print(f"\n--- Profiles with no events ---")
+        _print_profiles(new_profiles, start_idx=1)
+        combined_list.extend(new_profiles)
+    
+    active_start_idx = len(combined_list) + 1
+    if active_profiles:
+        print(f"\n--- Active Conversations ---")
+        _print_profiles(active_profiles, start_idx=active_start_idx)
+        combined_list.extend(active_profiles)
+    
+    if not combined_list:
+        print("\nNo recent or active matches found.")
+
     # 2. Selection Logic (Numeric or Name-based)
     selected = None
     while not selected:
@@ -641,12 +730,12 @@ def _interactive_menu() -> None:
         if not choice:
             return
         
-        # Check if user referred to the "No Events" list by number
-        if choice.isdigit() and new_profiles:
+        # Check if user referred to the lists by number
+        if choice.isdigit() and combined_list:
             idx = int(choice) - 1
-            if 0 <= idx < len(new_profiles):
-                selected = new_profiles[idx]
-                print(f"\n--- Selected from list: {selected['name']} ({selected['age']}) ---")
+            if 0 <= idx < len(combined_list):
+                selected = combined_list[idx]
+                print(f"\n--- Selected: {selected['name']} ({selected['age']}) ---")
                 continue
             else:
                 print(f"Number '{choice}' is out of range.")
@@ -667,9 +756,10 @@ def _interactive_menu() -> None:
         print("1. Unmatch Profile")
         print(f"2. {'Update' if has_conv else 'Import'} Conversation")
         print("3. Milestones (Date/Off-App/Sex)")
-        print("4. View Log")
-        print("5. Change Profile")
-        print("6. Exit")
+        print("4. Quick Log: Moved Off-App")
+        print("5. View Log")
+        print("6. Change Profile")
+        print("7. Exit")
         
         c = input("Choice: ").strip()
         if c == "1":
@@ -680,15 +770,18 @@ def _interactive_menu() -> None:
         elif c == "3":
             _handle_milestone_menu(selected)
         elif c == "4":
-            _show_event_log(selected)
+            _handle_moved_off_hinge(selected)
         elif c == "5":
+            _show_event_log(selected)
+        elif c == "6":
             _interactive_menu() # Restart search
             return
-        elif c == "6":
+        elif c == "7":
             break
 
 def main() -> int:
     init_db()
+    _recalculate_all_statuses()
     _handle_stale_detection()
     try:
         _interactive_menu()

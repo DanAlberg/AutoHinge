@@ -134,6 +134,7 @@ Press `Ctrl+C` during execution to access the pause menu:
 - `--no-review-elite`: Disable manual review for elite profiles (enabled by default)
 - `--profiles N`: Process N profiles then exit (default: 1)
 - `--verbose`: Enable verbose console logs (includes `[SCROLL]` and `[PHOTO]`)
+- `--validate-ml`: Enables the experimental ML validation suite. When this flag is active, `start.py` will pause to ask for a manual 0-5 blind rating of the profile *before* calculating any internal ML scores. It will then run an ablation study comparing the internal model against EVC, ArcFace SVR, and a Zero-Shot VLM (Gemini) evaluation, saving all outputs and latencies to `scoring_eval.csv` in the root directory.
 
 **Elite Review Mode** — When enabled (default), LLM5 flags profiles with T3/T4 job bands or elite university + high-trajectory career for manual review instead of auto-action.
 

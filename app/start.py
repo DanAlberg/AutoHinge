@@ -2,6 +2,10 @@
 
 """Entry point for the full Hinge scrape/score/opener pipeline."""
 
+import warnings
+# Suppress invalid escape sequence warnings from ppadb library in python 3.12+
+warnings.filterwarnings("ignore", category=SyntaxWarning)
+
 import argparse
 import json
 import os
@@ -23,6 +27,7 @@ from llm_client import LLMError
 from profile_utils import _get_core, _norm_value
 from runtime import _is_run_json_enabled, _log, set_verbose, set_interrupt_check
 from scoring import _classify_preference_flag, _format_score_table, _score_profile_long, _score_profile_short
+
 from sqlite_store import (
     get_db_path,
     upsert_profile_flat,
@@ -245,6 +250,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--unrestricted", action="store_true", help="Skip confirmations for dislike/send")
     parser.add_argument("--no-review-elite", action="store_false", dest="review_elite", help="Disable manual review for elite profiles (Default: Enabled)")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose [SCROLL]/[PHOTO] logging")
+    parser.add_argument("--validate-ml", action="store_true", help="Enable experimental ML validation suite and prompt for manual ratings")
     parser.add_argument(
         "--profiles",
         type=int,
@@ -738,6 +744,7 @@ def _run_single_profile(
     scroll_step: int,
     profile_idx: int,
     total_profiles: int,
+    ml_scorer: Optional[Any] = None,
 ) -> int:
     if total_profiles > 1:
         print(f"[RUN] profile {profile_idx + 1}/{total_profiles}")
@@ -807,6 +814,7 @@ def _run_single_profile(
         "llm4_5_result": {},
         "llm5_result": {},
         "target_action": {},
+        "ml_aesthetic_prediction": {}, # NEW ML DATA FIELD
     }
     _write_run_log(out_path, log_state)
     
@@ -820,6 +828,53 @@ def _run_single_profile(
     scroll_offset = int(scan_result.get("scroll_offset", 0))
     scroll_area = scan_result.get("scroll_area")
     scan_nodes = scan_result.get("nodes")
+
+    # --- EXPERIMENTAL ML VALIDATION SUITE (START) ---
+    # Disabled by default. Enabled via --validate-ml
+    dan_rating = None
+    ml_pred = {}
+    if args.validate_ml:
+        from manual_scoring import collect_manual_rating, update_dan_rating, log_eval_metrics
+        
+        # 1. Collect blind manual rating first
+        if not args.unrestricted:
+            dan_rating = collect_manual_rating()
+
+        # 2. Run localized ML Scorer
+        if ml_scorer and photo_paths:
+            print("[ML] Running localized Aesthetic ML Scorer...")
+            try:
+                t0 = time.perf_counter()
+                ml_pred = ml_scorer.predict_profile(photo_paths)
+                timings["ml_aesthetic_s"] = round(time.perf_counter() - t0, 2)
+                
+                score_val = ml_pred.get("score")
+                diags = ml_pred.get("diagnostics", {})
+                
+                print(f"\n{'='*40}")
+                print(f"★ [ML SCORE]: {score_val} / 5.0 ★")
+                if "error" in diags and diags["error"]:
+                    print(f"  Error: {diags['error']}")
+                else:
+                    print(f"  Valid faces found: {diags.get('valid_faces_extracted')}/{diags.get('total_images_provided')}")
+                    print("  Individual breakdown:")
+                    for p_file, p_score in diags.get("individual_photo_scores", {}).items():
+                        print(f"    - {p_file}: {p_score}")
+                    
+                    similar_profiles = diags.get("similar_profiles", [])
+                    if similar_profiles:
+                        print("\n  Diagnostic: Top 3 Similar Training Profiles:")
+                        for sim in similar_profiles:
+                            print(f"    - {sim['folder']} ({sim['similarity']} match) -> Rated {sim['your_rating']}")
+
+                print(f"{'='*40}\n")
+                
+                if log_state:
+                    log_state["ml_aesthetic_prediction"] = ml_pred
+            except Exception as e:
+                print(f"[ML] Aesthetic scoring failed: {e}")
+    # --- EXPERIMENTAL ML VALIDATION SUITE (END) ---
+
     if log_state:
         log_state["biometrics"] = biometrics
         log_state["ui_map_summary"] = {
@@ -848,17 +903,37 @@ def _run_single_profile(
         log_state["meta"] = meta
         _write_run_log(out_path, log_state)
 
-
-        #MANUAL RATING - CAN BE REMOVED WHEN DONE WITH IT
-        dan_rating = None
-        if not args.unrestricted:
-            from manual_scoring import collect_manual_rating, update_dan_rating
-            dan_rating = collect_manual_rating()
-
     extracted = _build_extracted_profile(biometrics, ui_map, llm1_result, llm1_meta)
     if log_state:
         log_state["extracted_profile"] = extracted
         _write_run_log(out_path, log_state)
+
+    # Hard abort if core biometrics failed to extract
+    core_bio = extracted.get("Core Biometrics (Objective)", {})
+    name_val = core_bio.get("Name")
+    age_val = core_bio.get("Age")
+    height_val = core_bio.get("Height")
+
+    missing_fields = []
+    if not name_val or str(name_val).strip() == "":
+        missing_fields.append("Name")
+    if age_val is None or str(age_val).strip() == "":
+        missing_fields.append("Age")
+    if height_val is None or str(height_val).strip() == "":
+        missing_fields.append("Height")
+
+    if missing_fields:
+        missing_str = ", ".join(missing_fields)
+        print(f"\n{'='*60}")
+        print(f"[CRITICAL ERROR] Failed to extract core biometrics: {missing_str}")
+        print(f"Extraction returned: Name={name_val}, Age={age_val}, Height={height_val}")
+        print("This is a fatal error requiring user intervention.")
+        print(f"{'='*60}\n")
+        _alert_user(f"CRITICAL: Failed to extract {missing_str}")
+        
+        # We need to completely abort the application, not just skip the profile.
+        # We return a specific exit code (e.g., 4) to bubble up and halt the main loop.
+        return 4
 
     t0 = time.perf_counter()
     eval_result = run_profile_eval_llm(
@@ -932,6 +1007,52 @@ def _run_single_profile(
             "t_short": int(T_SHORT),
         }
         _write_run_log(out_path, log_state)
+
+    # Ensure profile is in DB unconditionally and get PID for CSV logging
+    pid = None
+    try:
+        score_breakdown = f"decision={decision} long_score={long_score} short_score={short_score}\n\n" + score_table
+        pid = upsert_profile_flat(
+            extracted,
+            eval_result,
+            long_score=int(long_score),
+            short_score=int(short_score),
+            score_breakdown=score_breakdown,
+        )
+        if pid is not None:
+            if dan_rating is not None:
+                update_dan_rating(pid, dan_rating)
+            
+            # --- EXPERIMENTAL ML VALIDATION SUITE LOGGING (START) ---
+            if args.validate_ml:
+                # Run the 5-path ML ablation study and log to CSV
+                from ml.ml_validation import run_validation_ablation
+                name = core_bio.get("Name", "Unknown")
+                age = core_bio.get("Age", 0)
+                ml_pred_log = log_state.get("ml_aesthetic_prediction", {})
+                visual_traits = (extracted.get("Visual Analysis (Inferred From Images)") or {}).get("Inferred Visual Traits Summary") or {}
+                llm_tier = visual_traits.get("Apparent Attractiveness Tier", "")
+                llm_body_type = visual_traits.get("Apparent Build Category", "")
+                
+                run_validation_ablation(
+                    pid=pid,
+                    name=name,
+                    age=age,
+                    manual_rating=dan_rating,
+                    image_paths=photo_paths,
+                    llm_tier=llm_tier,
+                    llm_body_type=llm_body_type,
+                    llm_long_score=int(long_score),
+                    llm_short_score=int(short_score),
+                    ml_pred=ml_pred_log
+                )
+            # --- EXPERIMENTAL ML VALIDATION SUITE LOGGING (END) ---
+            
+    except Exception as e:
+        print(f"[DB/CSV] Initial profile upsert and eval logging failed: {e}")
+        # Re-raise LLMErrors from the VLM so they hit the global exception handler
+        if isinstance(e, LLMError):
+            raise e
 
     # --- INTERACTION LOOP (Retry Point) ---
     while True:
@@ -1517,21 +1638,8 @@ def _run_single_profile(
             # SQL logging (only after irreversible action)
             if irreversible_action_taken:
                 try:
-                    score_breakdown = (
-                        f"decision={decision} long_score={long_score} short_score={short_score}\n\n"
-                        + score_table
-                    )
-                    pid = upsert_profile_flat(
-                        extracted,
-                        eval_result,
-                        long_score=int(long_score),
-                        short_score=int(short_score),
-                        score_breakdown=score_breakdown,
-                    )
                     if pid is not None:
                         update_profile_verdict(pid, decision)
-                        if dan_rating is not None:
-                            update_dan_rating(pid, dan_rating)
                         if isinstance(llm3_result, dict) and llm3_result:
                             update_profile_opening_messages_json(pid, llm3_result)
                         if isinstance(llm4_result, dict) and llm4_result:
@@ -1643,6 +1751,25 @@ def main() -> int:
     max_scrolls = 40
     scroll_step = 900
 
+    # Initialize ML Scorer globally so models only load into memory once
+    ml_scorer = None
+    if args.validate_ml:
+        try:
+            from ml.predict_aesthetic import AestheticScorer
+        except ImportError:
+            AestheticScorer = None
+            
+        if AestheticScorer:
+            print("[INIT] Loading ML Aesthetic Scorer models into memory (This takes a few seconds)...")
+            try:
+                ml_scorer = AestheticScorer()
+                print("[INIT] ML Models loaded successfully.")
+            except Exception as e:
+                print(f"[INIT] WARNING: Failed to load AestheticScorer: {e}")
+                print("[INIT] Proceeding without local ML scoring.")
+        else:
+            print("[INIT] WARNING: AestheticScorer module not found. Is predict_aesthetic.py in app/ml/?")
+
     device = None
     width = height = 0
     keep_awake = True
@@ -1667,6 +1794,7 @@ def main() -> int:
                     scroll_step,
                     idx,
                     total_profiles,
+                    ml_scorer=ml_scorer,
                 )
             except LLMError as e:
                 # Create minimal log state for error reporting
@@ -1686,8 +1814,14 @@ def main() -> int:
                 except Exception:
                     out_path = ""
                 return _handle_llm_error(e, log_state, out_path)
+            
+            # rc == 2 indicates user requested stop
             if rc == 2:
                 break
+            # rc == 4 indicates critical extraction failure (Name/Age/Height missing)
+            if rc == 4:
+                print("\n[ABORT] Run aborted due to critical extraction failure.")
+                return 4
             if rc:
                 return rc
 

@@ -114,8 +114,17 @@ def run_profile_eval_llm(extracted: Dict[str, Any], model: str | None = None) ->
     dt_ms = int((time.perf_counter() - t0) * 1000)
     raw = resp.choices[0].message.content or ""
     
+    clean_raw = raw.strip()
+    if clean_raw.startswith("```json"):
+        clean_raw = clean_raw[7:]
+    elif clean_raw.startswith("```"):
+        clean_raw = clean_raw[3:]
+    if clean_raw.endswith("```"):
+        clean_raw = clean_raw[:-3]
+    clean_raw = clean_raw.strip()
+    
     try:
-        parsed = json.loads(raw or "{}")
+        parsed = json.loads(clean_raw or "{}")
     except Exception as e:
         _ai_trace_log_response(
             "profile_eval_llm",
@@ -135,6 +144,9 @@ def run_profile_eval_llm(extracted: Dict[str, Any], model: str | None = None) ->
             duration_ms=dt_ms,
         )
     
+    if isinstance(parsed, list) and len(parsed) > 0 and isinstance(parsed[0], dict):
+        parsed = parsed[0]
+
     if not isinstance(parsed, dict):
         _ai_trace_log_response(
             "profile_eval_llm",
@@ -211,8 +223,17 @@ def run_llm1_visual(
     dt_ms = int((time.perf_counter() - t0) * 1000)
     raw = resp.choices[0].message.content or ""
     
+    clean_raw = raw.strip()
+    if clean_raw.startswith("```json"):
+        clean_raw = clean_raw[7:]
+    elif clean_raw.startswith("```"):
+        clean_raw = clean_raw[3:]
+    if clean_raw.endswith("```"):
+        clean_raw = clean_raw[:-3]
+    clean_raw = clean_raw.strip()
+    
     try:
-        parsed = json.loads(raw or "{}")
+        parsed = json.loads(clean_raw or "{}")
     except Exception as e:
         _ai_trace_log_response(
             "llm1_visual",
@@ -232,6 +253,9 @@ def run_llm1_visual(
             duration_ms=dt_ms,
         )
     
+    if isinstance(parsed, list) and len(parsed) > 0 and isinstance(parsed[0], dict):
+        parsed = parsed[0]
+
     if not isinstance(parsed, dict):
         _ai_trace_log_response(
             "llm1_visual",
