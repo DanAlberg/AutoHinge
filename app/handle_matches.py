@@ -229,20 +229,42 @@ def _extract_messages_from_xml(xml_content: str, match_name: str) -> List[Dict[s
             nodes_to_sort.append({'type': 'TS', 'val': text, 'y': bounds[1]})
         
         # 2. Capture Chat Bubbles
+        # Messages can appear in content-desc (old format/some bubbles) or text (new format)
         d_lower = desc.strip().lower()
+        t_lower = text.strip().lower()
         name_key = match_name.lower().strip()
         
-        is_sent = d_lower.startswith("you:")
-        # Check for name prefix followed by a colon within a 3-character window
-        is_received = not is_sent and d_lower.startswith(name_key) and ":" in d_lower[:len(name_key)+3]
+        # Check content-desc first
+        is_sent_desc = d_lower.startswith("you:")
+        is_received_desc = not is_sent_desc and d_lower.startswith(name_key) and ":" in d_lower[:len(name_key)+3]
         
-        if is_sent or is_received:
+        if is_sent_desc or is_received_desc:
             nodes_to_sort.append({
                 'type': 'MSG',
-                'event': "message_sent" if is_sent else "message_received",
+                'event': "message_sent" if is_sent_desc else "message_received",
                 'val': desc.split(':', 1)[1].strip(),
                 'y': bounds[1]
             })
+            continue
+
+        # If not in desc, check text. In `hinge_ui.xml` example, the text bubble itself has no "You:" or "Ivy:" prefix,
+        # but they are positioned. Actually, looking at Ivy's XML, the text bubble is:
+        # <node text="Are you the distraction causing all those questionable Ferrari strategy calls?" ... />
+        # However, right above it there's often no explicit label inside the node. Wait, if it has no label, how do we know who sent it?
+        # Typically sent messages are right-aligned (x > 200) and received are left-aligned (x < 150).
+        # Let's use X-coordinates to infer sender if content-desc is empty.
+        
+        if text and not desc and not re.search(r'\d{1,2}:\d{2}', text):
+            # Exclude headers like "Yesterday 23:32" which are caught above
+            if text not in ["Profile", "Chat", "Sent"]:
+                # X coordinate check
+                is_sent_text = bounds[0] > 150
+                nodes_to_sort.append({
+                    'type': 'MSG',
+                    'event': "message_sent" if is_sent_text else "message_received",
+                    'val': text.strip(),
+                    'y': bounds[1]
+                })
 
     # Sort strictly by Top-to-Bottom visual position
     nodes_to_sort.sort(key=lambda x: x['y'])
@@ -304,7 +326,7 @@ def _automated_chat_capture(name: str, anchor_ts: str) -> List[Dict[str, Any]]:
     seen_hashes = set()
     scrolls, no_move_count = 0, 0
     
-    print(f"Capturing fast, stable conversation for {name}...")
+    print(f"Capturing conversation for {name}...")
     
     while scrolls < 50 and no_move_count < 3:
         xml = _dump_ui_xml(device)
