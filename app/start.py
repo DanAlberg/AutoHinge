@@ -18,6 +18,12 @@ import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from rich.console import Console
+from rich.panel import Panel
+from rich.prompt import Confirm, Prompt
+from rich.table import Table
+from rich import print as rprint
+
 import config  # ensure .env is loaded early
 
 from helper_functions import ensure_adb_running, connect_device, get_screen_resolution, open_hinge
@@ -142,6 +148,9 @@ def _force_gemini_env() -> None:
 # Global args reference for the signal handler to modify state
 GLOBAL_ARGS = None
 
+# Rich console
+console = Console()
+
 # Pending interrupt flag - set by signal handler, checked after LLM calls
 PENDING_INTERRUPT = False
 
@@ -182,12 +191,12 @@ def _signal_handler(sig, frame):
     
     # Check for double Ctrl+C = hard kill
     if now - _LAST_INTERRUPT_TIME < _INTERRUPT_KILL_WINDOW:
-        print("\n[INTERRUPT] Double Ctrl+C - hard exit!")
+        console.print("\n[bold red][INTERRUPT] Double Ctrl+C - hard exit![/bold red]")
         sys.exit(1)
     
     _LAST_INTERRUPT_TIME = now
     PENDING_INTERRUPT = True
-    print("\n[INTERRUPT] Ctrl+C received - will pause after current operation (Ctrl+C again to force quit)...")
+    console.print("\n[bold yellow][INTERRUPT] Ctrl+C received - will pause after current operation (Ctrl+C again to force quit)...[/bold yellow]")
     _interrupt_beep()
 
 
@@ -202,35 +211,35 @@ def _handle_pending_interrupt() -> None:
     
     PENDING_INTERRUPT = False  # Reset the flag
     
-    print("\n\n[PAUSED] Execution paused via Ctrl+C.")
-    print("1. Continue (Resume program)")
-    print(f"2. Toggle Unrestricted Mode (Current: {GLOBAL_ARGS.unrestricted if GLOBAL_ARGS else 'Unknown'})")
-    print(f"3. Toggle Elite Review Mode (Current: {GLOBAL_ARGS.review_elite if GLOBAL_ARGS else 'Unknown'})")
-    print("4. Undo / Retry (Restart decision & action for this profile)")
-    print("5. Quit (Kill program)")
+    console.print(Panel("[bold yellow]Execution paused via Ctrl+C.[/bold yellow]", title="[PAUSED]", expand=False, border_style="yellow"))
+    console.print("1. Continue (Resume program)")
+    console.print(f"2. Toggle Unrestricted Mode (Current: [cyan]{GLOBAL_ARGS.unrestricted if GLOBAL_ARGS else 'Unknown'}[/cyan])")
+    console.print(f"3. Toggle Elite Review Mode (Current: [cyan]{GLOBAL_ARGS.review_elite if GLOBAL_ARGS else 'Unknown'}[/cyan])")
+    console.print("4. Undo / Retry (Restart decision & action for this profile)")
+    console.print("5. Quit (Kill program)")
     
     try:
-        choice = input("Select option (1-5): ").strip()
+        choice = Prompt.ask("Select option", choices=["1", "2", "3", "4", "5"], default="1")
         if choice == '2':
             if GLOBAL_ARGS:
                 GLOBAL_ARGS.unrestricted = not GLOBAL_ARGS.unrestricted
-                print(f"[CONFIG] Unrestricted mode set to: {GLOBAL_ARGS.unrestricted}")
+                console.print(f"[bold cyan][CONFIG] Unrestricted mode set to: {GLOBAL_ARGS.unrestricted}[/bold cyan]")
         elif choice == '3':
             if GLOBAL_ARGS:
                 GLOBAL_ARGS.review_elite = not GLOBAL_ARGS.review_elite
-                print(f"[CONFIG] Elite Review mode set to: {GLOBAL_ARGS.review_elite}")
+                console.print(f"[bold cyan][CONFIG] Elite Review mode set to: {GLOBAL_ARGS.review_elite}[/bold cyan]")
         elif choice == '4':
             if GLOBAL_ARGS:
                 GLOBAL_ARGS.unrestricted = False
-                print("[CONFIG] Unrestricted mode disabled for retry")
+                console.print("[bold cyan][CONFIG] Unrestricted mode disabled for retry[/bold cyan]")
             raise RetryInteractionException()
         elif choice == '5':
-            print("[QUIT] Exiting...")
+            console.print("[bold red][QUIT] Exiting...[/bold red]")
             sys.exit(0)
     except (KeyboardInterrupt, EOFError):
         pass  # Fall through to resume
     
-    print("[RESUME] Resuming execution...")
+    console.print("[bold green][RESUME] Resuming execution...[/bold green]")
 
 
 def _init_device(device_ip: str):
@@ -672,15 +681,11 @@ def _handle_llm_error(error: LLMError, log_state: Dict[str, Any], out_path: str)
     _write_run_log(out_path, log_state)
     
     # Print clear console error
-    print(f"\n{'='*60}")
-    print(f"[LLM ERROR] {error.call_id} failed")
-    print(f"  Type: {error.error_type}")
-    print(f"  Model: {error.model}")
-    print(f"  Error: {error.error_message}")
+    error_text = f"Type: {error.error_type}\nModel: {error.model}\nError: {error.error_message}"
     if error.duration_ms is not None:
-        print(f"  Duration: {error.duration_ms}ms")
-    print(f"  Log file: {out_path}")
-    print(f"{'='*60}\n")
+        error_text += f"\nDuration: {error.duration_ms}ms"
+    error_text += f"\nLog file: {out_path}"
+    console.print(Panel(error_text, title=f"[bold red]LLM ERROR: {error.call_id} failed[/bold red]", border_style="red"))
     
     return 1
 
@@ -733,6 +738,32 @@ def _write_sent_message_record(
     out_path: str,
 ) -> None:
     return
+
+
+def _print_rich_score_table(label: str, score_result: Dict[str, Any]) -> None:
+    contribs = score_result.get("contributions", []) if isinstance(score_result, dict) else []
+    signals = (score_result.get("signals", {}) if isinstance(score_result, dict) else {}) or {}
+    profile_eval_inputs = (score_result.get("profile_eval_inputs", {}) if isinstance(score_result, dict) else {}) or {}
+    hard_kills = score_result.get("hard_kills", []) if isinstance(score_result, dict) else []
+    score = score_result.get("score", 0) if isinstance(score_result, dict) else 0
+
+    table = Table(title=f"{label.upper()} SCORE SUMMARY", title_style="bold cyan", border_style="cyan", show_header=True, header_style="bold magenta")
+    table.add_column("Section")
+    table.add_column("Field")
+    table.add_column("Value")
+    table.add_column("Delta", justify="right")
+
+    for c in contribs:
+        delta = c.get("delta", 0)
+        delta_str = f"[bold green]+{delta}[/bold green]" if delta > 0 else f"[bold red]{delta}[/bold red]" if delta < 0 else str(delta)
+        table.add_row(c.get("section", ""), c.get("field", ""), str(c.get("value", "")), delta_str)
+
+    console.print(table)
+    
+    summary_text = f"Final score: [bold white]{score}[/bold white] | Hard kills: [bold red]{len(hard_kills)}[/bold red]\n"
+    summary_text += f"Age signals: declared_age={signals.get('declared_age')} apparent_age_years={signals.get('apparent_age_years')} age_delta_years={signals.get('age_delta_years')}\n"
+    summary_text += f"Eval signals: job_band={profile_eval_inputs.get('job_band')} university_elite={profile_eval_inputs.get('university_elite')} home_country_iso={profile_eval_inputs.get('home_country_iso')}"
+    console.print(Panel(summary_text, border_style="blue", expand=False))
 
 
 def _run_single_profile(
@@ -851,23 +882,21 @@ def _run_single_profile(
                 score_val = ml_pred.get("score")
                 diags = ml_pred.get("diagnostics", {})
                 
-                print(f"\n{'='*40}")
-                print(f"★ [ML SCORE]: {score_val} / 5.0 ★")
+                ml_text = f"[bold]★ ML SCORE: {score_val} / 5.0 ★[/bold]\n"
                 if "error" in diags and diags["error"]:
-                    print(f"  Error: {diags['error']}")
+                    ml_text += f"Error: {diags['error']}\n"
                 else:
-                    print(f"  Valid faces found: {diags.get('valid_faces_extracted')}/{diags.get('total_images_provided')}")
-                    print("  Individual breakdown:")
+                    ml_text += f"Valid faces found: {diags.get('valid_faces_extracted')}/{diags.get('total_images_provided')}\n"
+                    ml_text += "Individual breakdown:\n"
                     for p_file, p_score in diags.get("individual_photo_scores", {}).items():
-                        print(f"    - {p_file}: {p_score}")
+                        ml_text += f"  - {p_file}: {p_score}\n"
                     
                     similar_profiles = diags.get("similar_profiles", [])
                     if similar_profiles:
-                        print("\n  Diagnostic: Top 3 Similar Training Profiles:")
+                        ml_text += "\nDiagnostic: Top 3 Similar Training Profiles:\n"
                         for sim in similar_profiles:
-                            print(f"    - {sim['folder']} ({sim['similarity']} match) -> Rated {sim['your_rating']}")
-
-                print(f"{'='*40}\n")
+                            ml_text += f"  - {sim['folder']} ({sim['similarity']} match) -> Rated {sim['your_rating']}\n"
+                console.print(Panel(ml_text.strip(), title="[bold magenta]Aesthetic ML Scorer[/bold magenta]", border_style="magenta"))
                 
                 if log_state:
                     log_state["ml_aesthetic_prediction"] = ml_pred
@@ -924,11 +953,10 @@ def _run_single_profile(
 
     if missing_fields:
         missing_str = ", ".join(missing_fields)
-        print(f"\n{'='*60}")
-        print(f"[CRITICAL ERROR] Failed to extract core biometrics: {missing_str}")
-        print(f"Extraction returned: Name={name_val}, Age={age_val}, Height={height_val}")
-        print("This is a fatal error requiring user intervention.")
-        print(f"{'='*60}\n")
+        error_text = f"Failed to extract core biometrics: [bold]{missing_str}[/bold]\n"
+        error_text += f"Extraction returned: Name={name_val}, Age={age_val}, Height={height_val}\n"
+        error_text += "This is a fatal error requiring user intervention."
+        console.print(Panel(error_text, title="[bold red]CRITICAL ERROR[/bold red]", border_style="red"))
         _alert_user(f"CRITICAL: Failed to extract {missing_str}")
         
         # We need to completely abort the application, not just skip the profile.
@@ -1057,24 +1085,19 @@ def _run_single_profile(
     # --- INTERACTION LOOP (Retry Point) ---
     while True:
         try:
-            print("\n" + score_table)
+            console.print("")
+            _print_rich_score_table("Long", long_score_result)
+            console.print("")
+            _print_rich_score_table("Short", short_score_result)
+            console.print("")
 
             manual_override = ""
             try:
-                print(
-                    "Gate decision pre-override: {decision} (long_score={long_score}, short_score={short_score}, "
-                    "long_delta={long_delta}, short_delta={short_delta})".format(
-                        decision=decision,
-                        long_score=long_score,
-                        short_score=short_score,
-                        long_delta=long_score - T_LONG,
-                        short_delta=short_score - T_SHORT,
-                    )
-                )
+                console.print(f"[bold cyan]Gate decision pre-override:[/bold cyan] {decision} (long_score={long_score}, short_score={short_score}, long_delta={long_score - T_LONG}, short_delta={short_score - T_SHORT})")
                 if not args.unrestricted:
                     _alert_user_if_needed("Action Required: Review gate decision")
                     t0 = time.perf_counter()
-                    override = input("Override decision? (long/short/reject, blank to keep): ").strip().lower()
+                    override = Prompt.ask("[bold yellow]Override decision?[/bold yellow]", choices=["long", "short", "reject", ""], default="", show_default=False).strip().lower()
                     timings["input_wait_s"] = timings.get("input_wait_s", 0.0) + (time.perf_counter() - t0)
                     if override in {"long", "short", "reject"}:
                         manual_override = override
@@ -1085,17 +1108,7 @@ def _run_single_profile(
                 log_state["manual_override"] = manual_override
                 log_state["gate_decision"] = decision
                 _write_run_log(out_path, log_state)
-            print(
-                "GATE decision={decision} long_score={long_score} short_score={short_score} "
-                "long_delta={long_delta} short_delta={short_delta} dom_margin={dom_margin}".format(
-                    decision=decision,
-                    long_score=long_score,
-                    short_score=short_score,
-                    long_delta=long_score - T_LONG,
-                    short_delta=short_score - T_SHORT,
-                    dom_margin=DOM_MARGIN,
-                )
-            )
+            console.print(f"[bold green]GATE[/bold green] decision={decision} long_score={long_score} short_score={short_score} long_delta={long_score - T_LONG} short_delta={short_score - T_SHORT} dom_margin={DOM_MARGIN}")
 
             llm3_variant = ""
             llm3_result = {}
@@ -1158,7 +1171,7 @@ def _run_single_profile(
                     # Handle LLM4.5 decision
                     if llm4_5_result.get("action") == "FAIL":
                         fail_reason = llm4_5_result.get("reason", "All lines rejected")
-                        print(f"[LLM4.5] FAIL: {fail_reason}")
+                        console.print(f"[bold red]\\[LLM4.5] FAIL:[/bold red] {fail_reason}")
                         _alert_user(f"All Messages Rejected\n\n{fail_reason}\n\nFalling back to manual mode.")
                         # Fall back to manual mode - user can override or skip
                         llm4_result, send_approved, redo_requested = _choose_opening_message(
@@ -1167,8 +1180,8 @@ def _run_single_profile(
                     elif llm4_5_result.get("action") == "PICK":
                         # LLM4.5 picked a winner
                         chosen_text = (llm4_5_result.get("chosen_text") or "").strip()
-                        print(f"[LLM4.5] PICK: {llm4_5_result.get('reason', '')}")
-                        print(f"[LLM4.5] Chosen: \"{chosen_text}\"")
+                        console.print(f"[bold green]\\[LLM4.5] PICK:[/bold green] {llm4_5_result.get('reason', '')}")
+                        console.print(f"[bold green]\\[LLM4.5] Chosen:[/bold green] \"{chosen_text}\"")
                         # Populate llm4_result with the chosen line for downstream flow
                         llm4_result["chosen_text"] = chosen_text
                         llm4_result["main_target_type"] = llm4_5_result.get("main_target_type", "")
@@ -1194,7 +1207,7 @@ def _run_single_profile(
                     
                     # LLM5 Safety Check (Unrestricted Mode)
                     if send_approved and args.unrestricted:
-                        print("[SAFETY] Running LLM5 safety check on message...")
+                        console.print("[bold yellow]\\[SAFETY] Running LLM5 safety check on message...[/bold yellow]")
                         chosen_text = (llm4_result.get("chosen_text") or "").strip()
                         
                         safety_context = score_table
@@ -1213,10 +1226,10 @@ def _run_single_profile(
                             reason = safety_res.get("reason", "Unknown reason")
                             is_elite = safety_res.get("elite_signal", False)
                             if is_elite:
-                                print(f"[ELITE] 💎 HNW/Elite Profile Detected: {reason}")
+                                console.print(f"[bold magenta]\\[ELITE] 💎 HNW/Elite Profile Detected:[/bold magenta] {reason}")
                                 _alert_user(f"Elite Profile Detected!\n\n{reason}")
                             else:
-                                print(f"[SAFETY] 🛑 INTERVENTION NEEDED: {reason}")
+                                console.print(f"[bold red]\\[SAFETY] 🛑 INTERVENTION NEEDED:[/bold red] {reason}")
                                 _alert_user(f"Safety Intervention Needed:\n\n{reason}")
                             
                             # Enter manual control with added safety options (Reject/Long/Short)
@@ -1224,7 +1237,7 @@ def _run_single_profile(
                                 llm3_result, llm4_result, unrestricted=False, timings=timings, safety_intervention=True
                             )
                         else:
-                            print("[SAFETY] ✅ Approved")
+                            console.print("[bold green]\\[SAFETY] ✅ Approved[/bold green]")
 
                     if redo_requested:
                         print("[SEND] redo requested; regenerating openers")
@@ -1692,12 +1705,8 @@ def _run_single_profile(
             print(f"Wrote score table to {table_path}")
 
     preference_flag = _classify_preference_flag(long_score, short_score)
-    print("\n=== Preference Flag ===")
-    print(
-        f"classification={preference_flag} "
-        f"(long_score={long_score}, short_score={short_score}, "
-        "t_long=15, t_short=20, dominance_margin=10)"
-    )
+    pref_text = f"classification={preference_flag} (long_score={long_score}, short_score={short_score}, t_long=15, t_short=20, dominance_margin=10)"
+    console.print(Panel(pref_text, title="[bold cyan]Preference Flag[/bold cyan]", border_style="cyan"))
 
     try:
         def _top_contribs(score_result: Dict[str, Any], n: int = 3) -> str:
@@ -1716,12 +1725,12 @@ def _run_single_profile(
         chosen_result = long_score_result if decision == "long_pickup" else short_score_result
         chosen_label = "long" if decision == "long_pickup" else ("short" if decision == "short_pickup" else "n/a")
         summary = (
-            f"FINAL decision={decision} "
-            f"long_score={long_score} short_score={short_score} "
-            f"long_delta={long_score - T_LONG} short_delta={short_score - T_SHORT} "
+            f"FINAL decision=[bold white]{decision}[/bold white]\n"
+            f"long_score={long_score} short_score={short_score}\n"
+            f"long_delta={long_score - T_LONG} short_delta={short_score - T_SHORT}\n"
             f"key_{chosen_label}_contributors={_top_contribs(chosen_result)}"
         )
-        print(summary)
+        console.print(Panel(summary, title="[bold green]Final Summary[/bold green]", border_style="green"))
     except Exception:
         pass
 
