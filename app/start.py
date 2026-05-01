@@ -260,6 +260,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--no-review-elite", action="store_false", dest="review_elite", help="Disable manual review for elite profiles (Default: Enabled)")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose [SCROLL]/[PHOTO] logging")
     parser.add_argument("--validate-ml", action="store_true", help="Enable experimental ML validation suite and prompt for manual ratings")
+    parser.add_argument("--force-short", action="store_true", help="Force short term message if subject is <= 26 and passes either threshold")
     parser.add_argument(
         "--profiles",
         type=int,
@@ -1022,6 +1023,14 @@ def _run_single_profile(
                 decision = "long_pickup"
             else:
                 decision = "reject"
+
+    if args.force_short:
+        try:
+            age_int = int(core_bio.get("Age")) if core_bio.get("Age") is not None else None
+        except (ValueError, TypeError):
+            age_int = None
+        if age_int is not None and age_int <= 26 and (long_ok or short_ok):
+            decision = "short_pickup"
 
     if log_state:
         log_state["gate_decision"] = decision

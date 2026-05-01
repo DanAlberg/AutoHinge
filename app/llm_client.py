@@ -29,19 +29,13 @@ class LLMError(Exception):
     
     def to_dict(self) -> Dict[str, Any]:
         """Serialize error details for JSON logging."""
-        prompt_preview = self.prompt
-        if len(prompt_preview) > 1000:
-            prompt_preview = prompt_preview[:1000] + "... (truncated)"
-        raw_preview = self.raw_response
-        if raw_preview and len(raw_preview) > 2000:
-            raw_preview = raw_preview[:2000] + "... (truncated)"
         return {
             "call_id": self.call_id,
             "model": self.model,
             "error_type": self.error_type,
             "error_message": self.error_message,
-            "prompt_preview": prompt_preview,
-            "raw_response_preview": raw_preview if raw_preview else None,
+            "prompt": self.prompt,
+            "raw_response": self.raw_response if self.raw_response else None,
             "duration_ms": self.duration_ms,
         }
 

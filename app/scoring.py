@@ -132,15 +132,15 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
         if 18 <= declared_age_int <= 21:
             record("Core Biometrics", "Age", "18-21", +20)
         elif 22 <= declared_age_int <= 24:
-            record("Core Biometrics", "Age", "22-24", +30)
+            record("Core Biometrics", "Age", "22-23", +30)
         elif 25 <= declared_age_int <= 27:
-            record("Core Biometrics", "Age", "25-27", +10)
+            record("Core Biometrics", "Age", "24-26", +20)
         elif 28 <= declared_age_int <= 30:
-            record("Core Biometrics", "Age", "28-30", 0)
+            record("Core Biometrics", "Age", "27-30", 0)
         elif 31 <= declared_age_int <= 35:
-            record("Core Biometrics", "Age", "31-35", -10)
+            record("Core Biometrics", "Age", "31-35", -15)
         elif 36 <= declared_age_int <= 40:
-            record("Core Biometrics", "Age", "36-40", -20)
+            record("Core Biometrics", "Age", "36-40", -25)
 
     # Height weighting (declared height only)
     height = core_val("Height")
@@ -481,8 +481,14 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
     if declared_age_int is not None:
         if 18 <= declared_age_int <= 22:
             record("Core Biometrics", "Age", "18-22", +5)
+        elif 23 <= declared_age_int <= 27:
+            record("Core Biometrics", "Age", "23-25", +10)
+        elif 28 <= declared_age_int <= 30:
+            record("Core Biometrics", "Age", "28-30", 0)
+        elif 31 <= declared_age_int <= 35:
+            record("Core Biometrics", "Age", "31-35", -10)
         elif 36 <= declared_age_int <= 40:
-            record("Core Biometrics", "Age", "36-40", -10)
+            record("Core Biometrics", "Age", "36-40", -15)
         elif declared_age_int >= 41:
             record("Core Biometrics", "Age", "41+", -20)
 
