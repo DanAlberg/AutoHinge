@@ -74,56 +74,83 @@ def _ensure_matches_tab(device) -> None:
                     xml = _dump_ui_xml(device)
                     break
                     
+    # Check if we are already on the matches list
+    if "Your turn" in xml or "Their turn" in xml or "Hidden" in xml:
+        return
+        
     import xml.etree.ElementTree as ET
     try:
         root = ET.fromstring(xml)
         for node in root.iter():
             cd = node.get("content-desc") or ""
             if cd.startswith("Matches"):
-                selected = node.get("selected") == "true"
-                if not selected:
-                    bounds_str = node.get("bounds")
-                    if bounds_str:
-                        b = _parse_bounds(bounds_str)
-                        if b:
-                            cx, cy = _bounds_center(b)
-                            print(f"{Colors.OKBLUE}Tapping Matches tab...{Colors.ENDC}")
-                            tap(device, cx, cy)
-                            time.sleep(2)
+                bounds_str = node.get("bounds")
+                if bounds_str:
+                    b = _parse_bounds(bounds_str)
+                    if b:
+                        cx, cy = _bounds_center(b)
+                        print(f"{Colors.OKBLUE}Tapping Matches tab...{Colors.ENDC}")
+                        tap(device, cx, cy)
+                        time.sleep(2)
                 return
     except Exception:
         pass
 
 def _expand_folder(device, xml: str, folder_prefix: str) -> str:
-    import xml.etree.ElementTree as ET
-    try:
-        root = ET.fromstring(xml)
-        folder_node = None
-        for node in root.iter():
-            text = node.get("text") or ""
-            if text.startswith(folder_prefix):
-                folder_node = node
-                break
-        
-        if folder_node is None: return xml
+    import re
+    nodes = _parse_ui_nodes(xml)
+    
+    # 1. Extract all text nodes
+    text_nodes = []
+    for n in nodes:
+        txt = (n.get("text") or "").strip()
+        b = n.get("bounds")
+        if txt and b:
+            # Ignore structural bottom/top navs roughly
+            if b[1] > 2100: continue
+            if b[3] < 300: continue
+            text_nodes.append({"text": txt, "y": b[1], "bounds": b})
             
-        fb = _parse_bounds(folder_node.get("bounds"))
-        if not fb: return xml
-        
-        for node in root.iter():
-            cd = node.get("content-desc") or ""
-            if cd in ["Expand", "Collapse"]:
-                b = _parse_bounds(node.get("bounds"))
-                if b and abs(_bounds_center(b)[1] - _bounds_center(fb)[1]) < 100:
-                    if cd == "Expand":
-                        print(f"{Colors.OKBLUE}Expanding {folder_prefix}...{Colors.ENDC}")
-                        cx, cy = _bounds_center(b)
-                        tap(device, cx, cy)
-                        time.sleep(1.5)
-                        return _dump_ui_xml(device)
-                    break
-    except Exception:
-        pass
+    # Sort by Y coordinate (top to bottom)
+    text_nodes.sort(key=lambda x: x["y"])
+    
+    headers = ["Your turn", "Their turn", "Hidden"]
+    
+    for i, tn in enumerate(text_nodes):
+        if tn["text"].startswith(folder_prefix):
+            # Found our target folder
+            m = re.search(r'\((\d+)\)', tn["text"])
+            count = int(m.group(1)) if m else 0
+            
+            if count == 0:
+                # No profiles inside, nothing to expand
+                return xml
+                
+            is_collapsed = False
+            
+            if i + 1 < len(text_nodes):
+                next_text = text_nodes[i+1]["text"]
+                # If the very next text is another header, we must be collapsed
+                if any(next_text.startswith(h) for h in headers):
+                    is_collapsed = True
+            else:
+                # It's the last text on the screen.
+                # If it's expanded, the profiles are just off screen.
+                # Do NOT tap it, as that would collapse it. Wait for the next scroll.
+                is_collapsed = False
+                
+            if is_collapsed:
+                print(f"{Colors.OKBLUE}Expanding {folder_prefix}...{Colors.ENDC}")
+                cx, cy = _bounds_center(tn["bounds"])
+                # The text node itself is clickable, or its parent is. Tapping its center works.
+                tap(device, cx, cy)
+                time.sleep(1.5)
+                return _dump_ui_xml(device)
+            else:
+                # Not collapsed
+                return xml
+                
+    # Folder not found on screen
     return xml
 
 def _extract_profiles_from_list(xml: str) -> List[Dict[str, Any]]:
@@ -406,26 +433,24 @@ def _run_auto_sync():
         swipe(device, 500, 500, 500, 2000, 300)
     time.sleep(1)
 
-    # Expand all folders
-    for folder in ["Your turn", "Their turn", "Hidden"]:
-        xml = _dump_ui_xml(device)
-        _expand_folder(device, xml, folder)
-
     # Now scroll and extract
     scrolls = 0
     max_scrolls = 15
     last_xml = ""
+    current_folder = "Your turn"
     
     while scrolls < max_scrolls:
         xml = _dump_ui_xml(device)
+        
+        # Expand folders as they come into view
+        for folder in ["Your turn", "Their turn"]:
+            xml = _expand_folder(device, xml, folder)
+            
         if xml == last_xml:
             break
         last_xml = xml
         
         nodes = _parse_ui_nodes(xml)
-        
-        # We need to assign each profile to the header that is immediately above it
-        # If no header is above it on THIS screen, it belongs to the folder we were last in.
         
         folders_on_screen = []
         for n in nodes:
@@ -447,31 +472,17 @@ def _run_auto_sync():
             name = p["name"]
             py = p["bounds"][1]
             
-            # Determine which folder this profile is in based on screen bounds
-            folder = "Your turn" # Default fallback
-            
-            # Find the header immediately above this profile
+            folder = current_folder
             for f in reversed(folders_on_screen):
-                if py >= f["y"] - 10: # small buffer
+                if py >= f["y"] - 10:
                     folder = f["name"]
                     break
-            else:
-                # If all headers on screen are BELOW this profile, it belongs to the folder above the screen.
-                if folders_on_screen and folders_on_screen[0]["name"] == "Their turn":
-                    folder = "Your turn"
-                elif folders_on_screen and folders_on_screen[0]["name"] == "Hidden":
-                    folder = "Their turn"
-                elif not folders_on_screen:
-                    # If absolutely no headers are on screen, it's a long list of something.
-                    # We can assume it's Hidden if we've scrolled a lot, or Their turn. 
-                    # But realistically it'll be part of the last known folder.
-                    pass # We will rely on previous categorization or safely assume Hidden at the bottom.
-                    # To be super safe, let's keep a global variable of the "current overarching folder"
-                    pass
+            
+            current_folder = folder
 
-            # Update the global "last seen folder" tracking
-            global_current_folder = folder
-
+            if folder == "Hidden":
+                continue
+                
             if name in seen_names_on_ui:
                 continue
                         
@@ -482,22 +493,6 @@ def _run_auto_sync():
             profs_in_db = _get_db_profiles_active_by_name(name)
             db_prof = _disambiguate_profile(profs_in_db, preview)
             
-            if folder == "Hidden":
-                if db_prof:
-                    m_log_str = db_prof["milestones"]
-                    m_log = json.loads(m_log_str) if m_log_str else []
-                    is_stale = any(m["event"] == "stale" for m in m_log)
-                    if not is_stale:
-                        print(f"Marking {name} as stale from Hidden list...")
-                        now = datetime.now().isoformat(timespec="seconds")
-                        _log_milestone(db_prof["id"], "stale", now, "Auto-detected stale from Hidden list")
-                    else:
-                        print(f"{name} is already known as stale. Stopping Hidden list traversal.")
-                        # Fast forward scrolls to exit
-                        scrolls = 999
-                        break
-                continue
-                
             needs_import = False
             is_new_match = False
             
@@ -553,9 +548,11 @@ def _run_auto_sync():
                             update_profile_match(cand_id, matched=True, match_time=match_time)
                             print_success(f"Logged new match for {name} at {match_time}.")
                             
-                            # Reload it
-                            profs_in_db = _get_db_profiles_active_by_name(name)
-                            db_prof = _disambiguate_profile(profs_in_db, preview)
+                            _update_profile_data(cand_id, chat_log=captured)
+                            print_success(f"Imported {len(captured)} new messages for {name}.")
+                            
+                            # Prevent the block below from running
+                            captured = None
                         else:
                             print_error(f"Could not link profile {name}. You may need to log it manually.")
                     
@@ -577,6 +574,9 @@ def _run_auto_sync():
                 _ensure_matches_tab(device)
                 time.sleep(1)
                 
+        if any(f["name"] == "Hidden" for f in folders_on_screen):
+            break
+            
         if scrolls < 999:
             swipe(device, 500, 1800, 500, 500, 500)
             time.sleep(1)
@@ -584,10 +584,43 @@ def _run_auto_sync():
     
     print("\nReconciling active profiles with UI lists...")
     active_in_db = _all_active_profiles_in_db()
-    for prof in active_in_db:
-        if prof["name"] not in seen_names_on_ui:
-            print_warning(f"Profile {prof['name']} (ID {prof['id']}) is missing from UI. Not auto-unmatching for safety, but please verify.")
-
+    missing_profiles = [p for p in active_in_db if p["name"] not in seen_names_on_ui]
+    
+    if missing_profiles:
+        print_warning(f"Detected {len(missing_profiles)} missing active profile(s). Checking Hidden folder to verify if they went stale...")
+        
+        # Expand Hidden
+        xml = _dump_ui_xml(device)
+        xml = _expand_folder(device, xml, "Hidden")
+        
+        # Get first few profiles in Hidden to see if they match the missing ones
+        hidden_profiles = []
+        nodes = _parse_ui_nodes(xml)
+        
+        # Find Y of Hidden header
+        hidden_y = 0
+        for n in nodes:
+            txt = n.get("text") or ""
+            if txt.startswith("Hidden"):
+                b = n.get("bounds")
+                if b: hidden_y = b[3]
+                break
+                
+        all_profs = _extract_profiles_from_list(xml)
+        for p in all_profs:
+            if p["bounds"][1] >= hidden_y - 10:
+                hidden_profiles.append(p)
+                
+        hidden_names = [p["name"] for p in hidden_profiles]
+        
+        for prof in missing_profiles:
+            if prof["name"] in hidden_names:
+                print(f"Marking {prof['name']} as stale (found in Hidden list).")
+                now = datetime.now().isoformat(timespec="seconds")
+                _log_milestone(prof["id"], "stale", now, "Auto-detected stale from Hidden list")
+            else:
+                print_warning(f"Profile {prof['name']} (ID {prof['id']}) is missing from UI and not at the top of Hidden. They likely unmatched you. Please verify.")
+                
     print_success("Sync complete.")
 
 # -------------------------------------------------------------------------
@@ -622,7 +655,10 @@ def _print_formatted_profiles(rows: List[Dict[str, Any]], title: str):
 
         c_log = json.loads(r.get("chat_log") or "[]")
         m_log = json.loads(r.get("milestones") or "[]")
-        events_info = f" | Msg: {len(c_log)} | MS: {len(m_log)}" if c_log or m_log else ""
+        
+        events_info = ""
+        if c_log: events_info += f" | Msg: {len(c_log)}"
+        if m_log: events_info += f" | MS: {len(m_log)}"
         
         print(f"[{idx}] {color}{status_str}{Colors.ENDC} {Colors.BOLD}{r['name']}{Colors.ENDC} (ID:{r['id']}, Age:{r['age']}){dt_str}{events_info}")
 
