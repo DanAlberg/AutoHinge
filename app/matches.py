@@ -137,7 +137,11 @@ def _expand_folder(device, xml: str, folder_prefix: str) -> str:
                 # It's the last text on the screen.
                 # If it's expanded, the profiles are just off screen.
                 # Do NOT tap it, as that would collapse it. Wait for the next scroll.
-                is_collapsed = False
+                # BUT if it's well above the bottom of the screen (e.g. y < 2000), it MUST be collapsed.
+                if tn["bounds"][3] < 2000:
+                    is_collapsed = True
+                else:
+                    is_collapsed = False
                 
             if is_collapsed:
                 print(f"{Colors.OKBLUE}Expanding {folder_prefix}...{Colors.ENDC}")
@@ -478,7 +482,10 @@ def _run_auto_sync():
                     folder = f["name"]
                     break
             
-            current_folder = folder
+            if folder != current_folder:
+                if folder in ["Their turn", "Hidden"]:
+                    print(f"{Colors.OKCYAN}--- Transitioned to {folder} ---{Colors.ENDC}")
+                current_folder = folder
 
             if folder == "Hidden":
                 continue
@@ -587,39 +594,54 @@ def _run_auto_sync():
     missing_profiles = [p for p in active_in_db if p["name"] not in seen_names_on_ui]
     
     if missing_profiles:
-        print_warning(f"Detected {len(missing_profiles)} missing active profile(s). Checking Hidden folder to verify if they went stale...")
-        
-        # Expand Hidden
-        xml = _dump_ui_xml(device)
-        xml = _expand_folder(device, xml, "Hidden")
-        
-        # Get first few profiles in Hidden to see if they match the missing ones
-        hidden_profiles = []
-        nodes = _parse_ui_nodes(xml)
-        
-        # Find Y of Hidden header
-        hidden_y = 0
-        for n in nodes:
-            txt = n.get("text") or ""
-            if txt.startswith("Hidden"):
-                b = n.get("bounds")
-                if b: hidden_y = b[3]
-                break
-                
-        all_profs = _extract_profiles_from_list(xml)
-        for p in all_profs:
-            if p["bounds"][1] >= hidden_y - 10:
-                hidden_profiles.append(p)
-                
-        hidden_names = [p["name"] for p in hidden_profiles]
+        print_warning(f"Detected {len(missing_profiles)} missing active profile(s).")
         
         for prof in missing_profiles:
-            if prof["name"] in hidden_names:
-                print(f"Marking {prof['name']} as stale (found in Hidden list).")
-                now = datetime.now().isoformat(timespec="seconds")
-                _log_milestone(prof["id"], "stale", now, "Auto-detected stale from Hidden list")
+            try:
+                last_dt = datetime.fromisoformat(prof['last_activity'].replace('Z', '+00:00'))
+                days_since = (datetime.now().timestamp() - last_dt.timestamp()) / 86400
+                is_stale_likely = days_since >= 13.5
+            except Exception:
+                is_stale_likely = False
+                
+            if is_stale_likely:
+                print(f"\n{Colors.WARNING}Profile {prof['name']} (ID {prof['id']}) is missing from UI and has no activity in ~14 days. They likely went stale.{Colors.ENDC}")
+                print("1. Mark as stale")
+                print("2. Actually, she unmatched")
+                print("3. Actually, I unmatched")
+                print("4. Skip for now")
+                ans = input("Choice: ").strip()
+                
+                event_type = None
+                if ans == '1': event_type = "stale"
+                elif ans == '2': event_type = "unmatched_by_her"
+                elif ans == '3': event_type = "unmatched_by_me"
+                
+                if event_type:
+                    print(f"Logging {event_type} for {prof['name']}.")
+                    now = datetime.now().isoformat(timespec="seconds")
+                    _log_milestone(prof["id"], event_type, now, "Auto-detected missing from UI")
+                else:
+                    print(f"Skipping update for {prof['name']}.")
             else:
-                print_warning(f"Profile {prof['name']} (ID {prof['id']}) is missing from UI and not at the top of Hidden. They likely unmatched you. Please verify.")
+                print(f"\n{Colors.WARNING}Profile {prof['name']} (ID {prof['id']}) is missing from UI. They likely unmatched you.{Colors.ENDC}")
+                print("1. She unmatched")
+                print("2. I unmatched")
+                print("3. Actually, mark as stale")
+                print("4. Skip for now")
+                ans = input("Choice: ").strip()
+                
+                event_type = None
+                if ans == '1': event_type = "unmatched_by_her"
+                elif ans == '2': event_type = "unmatched_by_me"
+                elif ans == '3': event_type = "stale"
+                
+                if event_type:
+                    print(f"Logging {event_type} for {prof['name']}.")
+                    now = datetime.now().isoformat(timespec="seconds")
+                    _log_milestone(prof["id"], event_type, now, "Auto-detected missing from UI")
+                else:
+                    print(f"Skipping update for {prof['name']}.")
                 
     print_success("Sync complete.")
 
@@ -785,6 +807,7 @@ def _profile_submenu(selected: Dict[str, Any]):
 
 def main() -> int:
     init_db()
+    _recalculate_all_statuses()
     
     # Optional launch prompt
     print_header("Hinge Matches Manager")

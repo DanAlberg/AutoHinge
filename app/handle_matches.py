@@ -40,24 +40,19 @@ def _parse_timestamp(raw: str) -> Optional[str]:
         "%d %b %H:%M", "%d %B %H:%M", "%b %d %H:%M", "%B %d %H:%M"
     ]
     now = datetime.now()
-    for fmt in formats[:20]:
+    for fmt in formats:
         try:
             dt = datetime.strptime(s, fmt)
-            return dt.isoformat(timespec="seconds")
-        except Exception:
-            continue
-    for fmt in formats[20:]:
-        try:
-            dt = datetime.strptime(s, fmt)
-            dt = dt.replace(year=now.year)
-            if dt > now:
-                dt = dt.replace(year=now.year - 1)
+            if dt.year == 1900:
+                dt = dt.replace(year=now.year)
+                if dt > now + timedelta(days=1):
+                    dt = dt.replace(year=now.year - 1)
             return dt.isoformat(timespec="seconds")
         except Exception:
             continue
     return None
 
-def _calculate_status(chat_log: List[Dict[str, Any]], milestones: List[Dict[str, Any]]) -> str:
+def _calculate_status(chat_log: List[Dict[str, Any]], milestones: List[Dict[str, Any]], match_time: str = None) -> str:
     if milestones:
         # Sort milestones chronologically in case they are out of order
         sorted_milestones = sorted(milestones, key=lambda x: x['timestamp'])
@@ -78,8 +73,13 @@ def _calculate_status(chat_log: List[Dict[str, Any]], milestones: List[Dict[str,
         if chat_log:
             sorted_chat = sorted(chat_log, key=lambda x: x['timestamp'])
             last_chat_ts = sorted_chat[-1]['timestamp']
+            
+            effective_ts = last_chat_ts
+            if match_time and match_time > last_chat_ts:
+                effective_ts = match_time
+                
             try:
-                last_dt = datetime.fromisoformat(last_chat_ts.replace('Z', '+00:00'))
+                last_dt = datetime.fromisoformat(effective_ts.replace('Z', '+00:00'))
                 if (datetime.now().timestamp() - last_dt.timestamp()) > (14 * 86400):
                     return "stale"
             except Exception:
@@ -98,16 +98,16 @@ def _recalculate_all_statuses() -> None:
     con = sqlite3.connect(db_path)
     try:
         cur = con.cursor()
-        cur.execute("SELECT id, chat_log, milestones, status FROM profiles WHERE matched = 1")
+        cur.execute("SELECT id, chat_log, milestones, status, match_time FROM profiles WHERE matched = 1")
         rows = cur.fetchall()
         
         updates = []
         for r in rows:
-            p_id, c_log_str, m_log_str, current_status = r
+            p_id, c_log_str, m_log_str, current_status, match_time = r
             chat_log = json.loads(c_log_str) if c_log_str else []
             milestones = json.loads(m_log_str) if m_log_str else []
             
-            new_status = _calculate_status(chat_log, milestones)
+            new_status = _calculate_status(chat_log, milestones, match_time)
             if new_status != current_status:
                 updates.append((new_status, p_id))
                 
@@ -122,11 +122,12 @@ def _update_profile_data(profile_id: int, chat_log: List[Dict[str, Any]] = None,
     con = sqlite3.connect(db_path)
     try:
         cur = con.cursor()
-        cur.execute("SELECT chat_log, milestones FROM profiles WHERE id = ?", (profile_id,))
+        cur.execute("SELECT chat_log, milestones, match_time FROM profiles WHERE id = ?", (profile_id,))
         res = cur.fetchone()
         
         current_chat = json.loads(res[0]) if res and res[0] else []
         current_milestones = json.loads(res[1]) if res and res[1] else []
+        match_time = res[2] if res else None
         
         final_chat = chat_log if chat_log is not None else current_chat
         final_milestones = milestones if milestones is not None else current_milestones
@@ -138,7 +139,7 @@ def _update_profile_data(profile_id: int, chat_log: List[Dict[str, Any]] = None,
         
         last_act = all_events[-1]['timestamp']
         
-        new_status = _calculate_status(final_chat, final_milestones)
+        new_status = _calculate_status(final_chat, final_milestones, match_time)
 
         cur.execute("""
             UPDATE profiles 
@@ -610,6 +611,21 @@ def _handle_sex(profile: Dict[str, Any]) -> None:
     description = input("Description (optional): ").strip()
     _log_milestone(profile_id, "sex", timestamp, description)
 
+def _handle_ended(profile: Dict[str, Any]) -> None:
+    profile_id = profile["id"]
+    print(f"\nLogging: Ended")
+    while True:
+        timestamp_input = input("Enter timestamp (or Enter for now): ").strip()
+        if not timestamp_input:
+            timestamp = datetime.now().isoformat(timespec="seconds")
+            break
+        parsed = _parse_timestamp(timestamp_input)
+        if parsed:
+            timestamp = parsed
+            break
+    description = input("Description (optional): ").strip()
+    _log_milestone(profile_id, "ended", timestamp, description)
+
 def _handle_stale_detection() -> None:
     """Detects and prints the names of inactive profiles before marking as stale."""
     db_path = get_db_path()
@@ -677,11 +693,13 @@ def _handle_milestone_menu(profile: Dict[str, Any]) -> None:
     print("1. Moved off Hinge")
     print("2. Date")
     print("3. Sexual encounter")
-    print("4. Back")
+    print("4. Ended")
+    print("5. Back")
     c = input("Choice: ").strip()
     if c == "1": _handle_moved_off_hinge(profile)
     elif c == "2": _handle_date(profile)
     elif c == "3": _handle_sex(profile)
+    elif c == "4": _handle_ended(profile)
 
 def _find_profile_by_name(name_query: str) -> Optional[Dict[str, Any]]:
     """Searches for profiles by name and handles duplicates."""
