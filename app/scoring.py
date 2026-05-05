@@ -328,6 +328,10 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
         record("Visual Analysis", "Presentation Red Flags", flag, -5)
 
     # Profile Evaluation (LLM2)
+    sugar_baby_flag = int(eval_result.get("sugar_baby_flag", 0) or 0)
+    if sugar_baby_flag == 1:
+        record("Profile Eval", "Sugar Baby Flag", "Yes", -10)
+
     job_band = _norm_value((eval_result.get("job") or {}).get("band", ""))
     if job_band == _norm_value("T0"):
         record("Profile Eval", "Job Tier", "T0", -20)
@@ -720,6 +724,10 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
         record("Visual Analysis", "Grooming Effort Level", grooming, -5)
 
     # Profile Evaluation (LLM2)
+    sugar_baby_flag = int(eval_result.get("sugar_baby_flag", 0) or 0)
+    if sugar_baby_flag == 1:
+        record("Profile Eval", "Sugar Baby Flag", "Yes", -10)
+
     job_band = _norm_value((eval_result.get("job") or {}).get("band", ""))
     if job_band == _norm_value("T0"):
         record("Profile Eval", "Job Tier", "T0", -10)

@@ -1092,6 +1092,7 @@ def _run_single_profile(
             raise e
 
     # --- INTERACTION LOOP (Retry Point) ---
+    manual_override = ""
     while True:
         try:
             console.print("")
@@ -1100,10 +1101,9 @@ def _run_single_profile(
             _print_rich_score_table("Short", short_score_result)
             console.print("")
 
-            manual_override = ""
             try:
                 console.print(f"[bold cyan]Gate decision pre-override:[/bold cyan] {decision} (long_score={long_score}, short_score={short_score}, long_delta={long_score - T_LONG}, short_delta={short_score - T_SHORT})")
-                if not args.unrestricted:
+                if not args.unrestricted and not manual_override:
                     _alert_user_if_needed("Action Required: Review gate decision")
                     t0 = time.perf_counter()
                     override = Prompt.ask("[bold yellow]Override decision?[/bold yellow]", choices=["long", "short", "reject", ""], default="", show_default=False).strip().lower()
@@ -1489,7 +1489,7 @@ def _run_single_profile(
 
             if decision == "reject":
                 force_manual_reject = False
-                if args.unrestricted:
+                if args.unrestricted and manual_override != "reject":
                     print("[SAFETY] Running LLM5 safety check on rejection...")
                     safety_context = score_table
                     if args.review_elite:
@@ -1676,8 +1676,10 @@ def _run_single_profile(
         except RetryInteractionException as e:
             if getattr(e, "new_decision", None):
                 decision = e.new_decision
+                manual_override = e.new_decision
                 print(f"\n[UNDO] Switching strategy to: {decision}")
             else:
+                manual_override = ""
                 print("\n[UNDO] Reverting to decision phase...")
             # Loop continues, re-running decision/action logic
             continue

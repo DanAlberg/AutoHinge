@@ -75,7 +75,10 @@ def run_profile_eval_llm(extracted: Dict[str, Any], model: str | None = None) ->
     job_title = core.get("Job title", "") or ""
     university = core.get("University", "") or ""
 
-    prompt = LLM2(home_town, job_title, university)
+    prompts_list = extracted.get("Profile Content (Free Description)", {}).get("Profile Prompts and Answers", [])
+    prompts_text = " | ".join([f"{p.get('prompt', '')}: {p.get('answer', '')}" for p in prompts_list if p.get("answer")])
+
+    prompt = LLM2(home_town, job_title, university, prompts_text)
     requested_model = model or get_default_model()
     resolved_model = resolve_model(requested_model)
     trace_lines = [

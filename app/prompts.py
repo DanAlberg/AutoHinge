@@ -104,9 +104,9 @@ def LLM1_VISUAL() -> str:
 
 
 
-def LLM2(home_town: str, job_title: str, university: str) -> str:
+def LLM2(home_town: str, job_title: str, university: str, prompts_text: str = "") -> str:
     """
-    Build the enrichment prompt for evaluating Home town, Job title, University.
+    Build the enrichment prompt for evaluating Home town, Job title, University, and Prompts.
     Returns a single prompt string instructing the model to output EXACTLY one JSON object.
     """
     parts = [
@@ -114,15 +114,18 @@ def LLM2(home_town: str, job_title: str, university: str) -> str:
         "INPUT FIELDS (from the extracted JSON):\n",
         '- "Home town" (string; may be city/region/country or empty)\n',
         '- "Job title" (string; may be empty)\n',
-        '- "University" (string; may be empty)\n\n',
+        '- "University" (string; may be empty)\n',
+        '- "Prompts" (string; profile prompts and answers)\n\n',
         "VALUES:\n",
         f'Home town: "{home_town or ""}"\n',
         f'Job title: "{job_title or ""}"\n',
-        f'University: "{university or ""}"\n\n',
-        "YOUR TASKS (3):\n",
+        f'University: "{university or ""}"\n',
+        f'Prompts: "{prompts_text or ""}"\n\n',
+        "YOUR TASKS (4):\n",
         '1) Resolve "Home town" to an ISO 3166-1 alpha-2 country code (uppercase). If it is a UK city/area (e.g., "Wembley", "Harrow", "Manchester"), return "GB".\n',
         '2) Estimate FUTURE EARNING POTENTIAL (TIER) from the vague job/study field AND the university context. Titles are often minimal (e.g., "Tech", "Finance", "Product", "Student", "PhD"). Use the tier table in section B and return the corresponding band "T0"-"T4". When uncertain between two adjacent tiers, be slightly optimistic and choose the higher tier by at most one step.\n',
-        '3) Check if "University" matches an elite list (case-insensitive), and return a 1/0 flag and the matched canonical name.\n\n',
+        '3) Check if "University" matches an elite list (case-insensitive), and return a 1/0 flag and the matched canonical name.\n',
+        '4) Analyze the Prompts for any language indicating "sugar baby" tendencies or transactional relationship expectations. Return a 1/0 flag.\n\n',
         "--------------------------------------------------------------------------------\n",
         "A) home_country_iso\n",
         '- If unresolved: home_country_iso = "" and home_country_confidence = 0.0.\n\n',
@@ -148,6 +151,8 @@ def LLM2(home_town: str, job_title: str, university: str) -> str:
         '- Matching rule: If the University field contains multiple names or partial mentions (e.g., "Oxford, PhD @ UCL"), treat it as elite if ANY part contains an elite name (case-insensitive). Set matched_university_name to the canonical elite name.\n',
         "- university_elite = 1 if matched, else 0\n",
         '- matched_university_name = the canonical elite name matched, else "".\n\n',
+        "D) sugar_baby_flag\n",
+        "- Set to 1 if the prompts contain strong transactional or 'sugar baby' signals (e.g., 'spoil me', 'buy me things', 'sugar daddy', 'financial domination', 'princess treatment'), else 0.\n\n",
         "--------------------------------------------------------------------------------\n",
         "OUTPUT EXACTLY ONE JSON OBJECT (no commentary, no code fences):\n\n",
         "{\n",
@@ -160,7 +165,8 @@ def LLM2(home_town: str, job_title: str, university: str) -> str:
         '    "band_reason": ""               // one short sentence justifying the tier choice\n',
         "  },\n\n",
         '  "university_elite": 0,            // 1 or 0\n',
-        '  "matched_university_name": ""\n',
+        '  "matched_university_name": "",\n',
+        '  "sugar_baby_flag": 0              // 1 or 0\n',
         "}\n",
     ]
     return "".join(parts)
