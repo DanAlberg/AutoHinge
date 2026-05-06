@@ -7,7 +7,7 @@ import cv2
 import joblib
 from datetime import datetime
 
-from llm_client import get_llm_client, get_default_model, LLMError
+from llm_client import generate_completion, get_large_model, LLMError
 from prompts import LLM_AESTHETIC_EVAL
 from sqlite_store import get_db_path
 
@@ -56,9 +56,8 @@ def _run_vlm_zero_shot(image_paths: list[str]) -> tuple[float, int]:
     Returns (score, latency_ms).
     Throws an LLMError explicitly if the request is blocked, hallucinated, or malformed.
     """
-    client = get_llm_client()
     prompt_text = LLM_AESTHETIC_EVAL()
-    model_name = get_default_model()
+    model_name = get_large_model()
     
     messages = [
         {"role": "user", "content": [{"type": "text", "text": prompt_text}]}
@@ -79,8 +78,8 @@ def _run_vlm_zero_shot(image_paths: list[str]) -> tuple[float, int]:
     t0 = time.perf_counter()
     raw_response = ""
     try:
-        resp = client.chat.completions.create(model=model_name, messages=messages)
-        raw_response = resp.choices[0].message.content.strip()
+        resp = generate_completion(model_type="large", messages=messages)
+        raw_response = resp.content.strip()
     except Exception as e:
         duration = int((time.perf_counter() - t0) * 1000)
         raise LLMError(

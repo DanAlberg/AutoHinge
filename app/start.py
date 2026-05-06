@@ -666,6 +666,26 @@ def _write_run_log(path: str, data: Dict[str, Any]) -> None:
     if not path:
         return
     try:
+        # Calculate total cost
+        total_cost = 0.0
+        if "llm1_meta" in data and isinstance(data["llm1_meta"], dict):
+            total_cost += data["llm1_meta"].get("cost_usd", 0.0)
+        if "profile_eval" in data and isinstance(data["profile_eval"], dict):
+            total_cost += data["profile_eval"].get("cost_usd", 0.0)
+        if "llm3_result" in data and isinstance(data["llm3_result"], dict):
+            total_cost += data["llm3_result"].get("cost_usd", 0.0)
+        if "llm3_5_result" in data and isinstance(data["llm3_5_result"], dict):
+            total_cost += data["llm3_5_result"].get("cost_usd", 0.0)
+        if "llm4_result" in data and isinstance(data["llm4_result"], dict):
+            total_cost += data["llm4_result"].get("cost_usd", 0.0)
+        if "llm4_5_result" in data and isinstance(data["llm4_5_result"], dict):
+            total_cost += data["llm4_5_result"].get("cost_usd", 0.0)
+        if "llm5_result" in data and isinstance(data["llm5_result"], dict):
+            total_cost += data["llm5_result"].get("cost_usd", 0.0)
+
+        if "meta" in data and isinstance(data["meta"], dict):
+            data["meta"]["total_cost_usd"] = round(total_cost, 6)
+
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     except Exception as e:

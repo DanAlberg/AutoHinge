@@ -171,7 +171,7 @@ def _extract_profiles_from_list(xml: str) -> List[Dict[str, Any]]:
         
         # Sort nodes by top y-coordinate
         nodes.sort(key=lambda n: n["y"])
-        ignore_prefixes = ["Your turn", "Their turn", "Hidden", "Matches", "Discover", "Standouts", "Likes You", "Profile Hub", "Inactive chats are hidden"]
+        ignore_prefixes = ["Your turn", "Their turn", "Hidden", "Matches", "Discover", "Standouts", "Likes You", "Profile Hub", "Inactive chats are hidden", "You‘re nearing the limit"]
         
         # In the XML, Name and Message are siblings inside a view:
         # <node index="0" text="Priyaa" .../>
@@ -265,7 +265,7 @@ def _attempt_auto_link_profile(device, name: str, chat_log: List[Dict[str, Any]]
     cur = con.cursor()
     
     # 1. Simple route: Try to match by opening text
-    first_sent = next((m for m in chat_log if m["event"] == "message_sent"), None)
+    sent_msgs = [m for m in chat_log if m["event"] == "message_sent"]
     
     cur.execute("""
         SELECT id, opening_pick_text, Age, Height_cm
@@ -274,14 +274,18 @@ def _attempt_auto_link_profile(device, name: str, chat_log: List[Dict[str, Any]]
     """, (name,))
     candidates = cur.fetchall()
     
-    if first_sent and candidates:
-        first_sent_desc = first_sent["description"].strip().lower()
+    if sent_msgs and candidates:
         for cand in candidates:
             cand_id, cand_pick, cand_age, cand_height = cand
-            if cand_pick and cand_pick.strip().lower() == first_sent_desc:
-                con.close()
-                print_success(f"Auto-linked {name} via matching opening message!")
-                return cand_id
+            cand_pick_lower = cand_pick.strip().lower() if cand_pick else ""
+            
+            for sent_msg in sent_msgs:
+                sent_msg_desc = sent_msg["description"].strip().lower()
+                print(f"[DEBUG] Comparing sent message: '{sent_msg_desc}' with DB opening_pick_text: '{cand_pick_lower}'")
+                if cand_pick and cand_pick_lower == sent_msg_desc:
+                    con.close()
+                    print_success(f"Auto-linked {name} via matching opening message!")
+                    return cand_id
                 
     # 2. Complex route: Scroll and extract biometrics
     print_warning(f"Could not auto-link {name} via message. Attempting biometrics extraction...")
@@ -307,16 +311,25 @@ def _attempt_auto_link_profile(device, name: str, chat_log: List[Dict[str, Any]]
     scroll_area = max(scroll_nodes, key=lambda n: n["bounds"][3] - n["bounds"][1])["bounds"] if scroll_nodes else (0, 0, 1080, 2400)
     
     # We might need to scroll down to see biometrics
-    swipe(device, 500, 1500, 500, 500, 400)
-    time.sleep(1)
-    
-    xml2 = _dump_ui_xml(device)
-    nodes2 = _parse_ui_nodes(xml2)
-    
-    # Combine nodes from before and after scroll
-    bio = _extract_biometrics_from_nodes(nodes + nodes2, scroll_area)
+    # We loop up to 6 times to ensure we find it, since some profiles are very long
+    max_biometric_scrolls = 6
+    scrolls = 0
+    all_nodes = list(nodes)
+    bio = _extract_biometrics_from_nodes(all_nodes, scroll_area)
     ui_age = bio.get("Age")
     ui_height = bio.get("Height")
+    
+    while not (ui_age and ui_height) and scrolls < max_biometric_scrolls:
+        swipe(device, 500, 1500, 500, 500, 400)
+        time.sleep(1)
+        xml_next = _dump_ui_xml(device)
+        nodes_next = _parse_ui_nodes(xml_next)
+        all_nodes.extend(nodes_next)
+        
+        bio = _extract_biometrics_from_nodes(all_nodes, scroll_area)
+        ui_age = bio.get("Age")
+        ui_height = bio.get("Height")
+        scrolls += 1
     
     # Tap back to "Chat"
     for n in nodes:

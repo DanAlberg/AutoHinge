@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 from json_repair import repair_json
 
-from llm_client import get_default_model, get_llm_client, resolve_model, LLMError
+from llm_client import LLMError, generate_completion, get_large_model
 from prompts import LLM3_LONG, LLM3_SHORT, LLM3_5_CRITIQUE, LLM4_LONG, LLM4_SHORT, LLM4_5_CRITIQUE, LLM5_SAFETY
 from ai_trace import _ai_trace_log, _ai_trace_log_response, _ai_trace_prompt_lines
 from runtime import _log
@@ -33,8 +33,7 @@ def _parse_json_with_fallback(raw: str) -> Dict[str, Any]:
 
 def run_llm3_long(extracted: Dict[str, Any], model: str | None = None) -> Dict[str, Any]:
     prompt = LLM3_LONG(extracted)
-    requested_model = model or get_default_model()
-    resolved_model = resolve_model(requested_model)
+    resolved_model = get_large_model()
     trace_lines = [
         f"AI_CALL call_id=llm3_long model={resolved_model} response_format=json_object"
     ]
@@ -43,11 +42,12 @@ def run_llm3_long(extracted: Dict[str, Any], model: str | None = None) -> Dict[s
     
     t0 = time.perf_counter()
     try:
-        resp = get_llm_client().chat.completions.create(
-            model=resolved_model,
+        resp = generate_completion(
+            model_type="large",
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}],
         )
+        resolved_model = resp.model_name
     except Exception as e:
         dt_ms = int((time.perf_counter() - t0) * 1000)
         _ai_trace_log_response(
@@ -69,7 +69,7 @@ def run_llm3_long(extracted: Dict[str, Any], model: str | None = None) -> Dict[s
         )
     
     dt_ms = int((time.perf_counter() - t0) * 1000)
-    raw = resp.choices[0].message.content or ""
+    raw = resp.content or ""
     
     try:
         parsed = _parse_json_with_fallback(raw)
@@ -112,6 +112,7 @@ def run_llm3_long(extracted: Dict[str, Any], model: str | None = None) -> Dict[s
         )
     
     parsed["model_used"] = resolved_model
+    parsed["cost_usd"] = resp.cost_usd
     _ai_trace_log_response(
         "llm3_long",
         resolved_model,
@@ -124,8 +125,7 @@ def run_llm3_long(extracted: Dict[str, Any], model: str | None = None) -> Dict[s
 
 def run_llm3_short(extracted: Dict[str, Any], model: str | None = None) -> Dict[str, Any]:
     prompt = LLM3_SHORT(extracted)
-    requested_model = model or get_default_model()
-    resolved_model = resolve_model(requested_model)
+    resolved_model = get_large_model()
     trace_lines = [
         f"AI_CALL call_id=llm3_short model={resolved_model} response_format=json_object"
     ]
@@ -134,11 +134,12 @@ def run_llm3_short(extracted: Dict[str, Any], model: str | None = None) -> Dict[
     
     t0 = time.perf_counter()
     try:
-        resp = get_llm_client().chat.completions.create(
-            model=resolved_model,
+        resp = generate_completion(
+            model_type="large",
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}],
         )
+        resolved_model = resp.model_name
     except Exception as e:
         dt_ms = int((time.perf_counter() - t0) * 1000)
         _ai_trace_log_response(
@@ -160,7 +161,7 @@ def run_llm3_short(extracted: Dict[str, Any], model: str | None = None) -> Dict[
         )
     
     dt_ms = int((time.perf_counter() - t0) * 1000)
-    raw = resp.choices[0].message.content or ""
+    raw = resp.content or ""
     
     try:
         parsed = _parse_json_with_fallback(raw)
@@ -203,6 +204,7 @@ def run_llm3_short(extracted: Dict[str, Any], model: str | None = None) -> Dict[
         )
     
     parsed["model_used"] = resolved_model
+    parsed["cost_usd"] = resp.cost_usd
     _ai_trace_log_response(
         "llm3_short",
         resolved_model,
@@ -216,8 +218,7 @@ def run_llm3_short(extracted: Dict[str, Any], model: str | None = None) -> Dict[
 def run_llm3_5_critique(openers_json: Dict[str, Any], extracted: Dict[str, Any], variant: str, model: str | None = None) -> Dict[str, Any]:
     """Run the cynical critique on generated openers."""
     prompt = LLM3_5_CRITIQUE(openers_json, extracted, variant)
-    requested_model = model or get_default_model()
-    resolved_model = resolve_model(requested_model)
+    resolved_model = get_large_model()
     trace_lines = [
         f"AI_CALL call_id=llm3_5_critique model={resolved_model} response_format=json_object"
     ]
@@ -226,11 +227,12 @@ def run_llm3_5_critique(openers_json: Dict[str, Any], extracted: Dict[str, Any],
     
     t0 = time.perf_counter()
     try:
-        resp = get_llm_client().chat.completions.create(
-            model=resolved_model,
+        resp = generate_completion(
+            model_type="large",
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}],
         )
+        resolved_model = resp.model_name
     except Exception as e:
         dt_ms = int((time.perf_counter() - t0) * 1000)
         _ai_trace_log_response(
@@ -252,7 +254,7 @@ def run_llm3_5_critique(openers_json: Dict[str, Any], extracted: Dict[str, Any],
         )
     
     dt_ms = int((time.perf_counter() - t0) * 1000)
-    raw = resp.choices[0].message.content or ""
+    raw = resp.content or ""
     
     try:
         parsed = _parse_json_with_fallback(raw)
@@ -295,6 +297,7 @@ def run_llm3_5_critique(openers_json: Dict[str, Any], extracted: Dict[str, Any],
         )
     
     parsed["model_used"] = resolved_model
+    parsed["cost_usd"] = resp.cost_usd
     _ai_trace_log_response(
         "llm3_5_critique",
         resolved_model,
@@ -307,8 +310,7 @@ def run_llm3_5_critique(openers_json: Dict[str, Any], extracted: Dict[str, Any],
 
 def _run_llm4_prompt(prompt: str, call_id: str, model: str | None = None) -> Dict[str, Any]:
     """Internal helper for LLM4 calls with proper tracing."""
-    requested_model = model or get_default_model()
-    resolved_model = resolve_model(requested_model)
+    resolved_model = get_large_model()
     trace_lines = [
         f"AI_CALL call_id={call_id} model={resolved_model} response_format=json_object"
     ]
@@ -317,11 +319,12 @@ def _run_llm4_prompt(prompt: str, call_id: str, model: str | None = None) -> Dic
     
     t0 = time.perf_counter()
     try:
-        resp = get_llm_client().chat.completions.create(
-            model=resolved_model,
+        resp = generate_completion(
+            model_type="large",
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}],
         )
+        resolved_model = resp.model_name
     except Exception as e:
         dt_ms = int((time.perf_counter() - t0) * 1000)
         _ai_trace_log_response(
@@ -343,7 +346,7 @@ def _run_llm4_prompt(prompt: str, call_id: str, model: str | None = None) -> Dic
         )
     
     dt_ms = int((time.perf_counter() - t0) * 1000)
-    raw = resp.choices[0].message.content or ""
+    raw = resp.content or ""
     
     try:
         parsed = _parse_json_with_fallback(raw)
@@ -386,6 +389,7 @@ def _run_llm4_prompt(prompt: str, call_id: str, model: str | None = None) -> Dic
         )
     
     parsed["model_used"] = resolved_model
+    parsed["cost_usd"] = resp.cost_usd
     return parsed
 
 
@@ -404,8 +408,7 @@ def run_llm4_short(openers_json: Dict[str, Any], critiques_json: Dict[str, Any],
 def run_llm4_5_critique(llm4_result: Dict[str, Any], extracted: Dict[str, Any], variant: str, model: str | None = None) -> Dict[str, Any]:
     """Run LLM4.5 critique on the chosen opener from LLM4. variant is 'short' or 'long'."""
     prompt = LLM4_5_CRITIQUE(llm4_result, extracted, variant)
-    requested_model = model or get_default_model()
-    resolved_model = resolve_model(requested_model)
+    resolved_model = get_large_model()
     trace_lines = [
         f"AI_CALL call_id=llm4_5_critique model={resolved_model} response_format=json_object"
     ]
@@ -414,11 +417,12 @@ def run_llm4_5_critique(llm4_result: Dict[str, Any], extracted: Dict[str, Any], 
     
     t0 = time.perf_counter()
     try:
-        resp = get_llm_client().chat.completions.create(
-            model=resolved_model,
+        resp = generate_completion(
+            model_type="large",
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}],
         )
+        resolved_model = resp.model_name
     except Exception as e:
         dt_ms = int((time.perf_counter() - t0) * 1000)
         _ai_trace_log_response(
@@ -440,7 +444,7 @@ def run_llm4_5_critique(llm4_result: Dict[str, Any], extracted: Dict[str, Any], 
         )
     
     dt_ms = int((time.perf_counter() - t0) * 1000)
-    raw = resp.choices[0].message.content or ""
+    raw = resp.content or ""
     
     try:
         parsed = _parse_json_with_fallback(raw)
@@ -483,6 +487,7 @@ def run_llm4_5_critique(llm4_result: Dict[str, Any], extracted: Dict[str, Any], 
         )
     
     parsed["model_used"] = resolved_model
+    parsed["cost_usd"] = resp.cost_usd
     _ai_trace_log_response(
         "llm4_5_critique",
         resolved_model,
@@ -501,8 +506,7 @@ def run_llm5_safety(
     model: str | None = None
 ) -> Dict[str, Any]:
     prompt = LLM5_SAFETY(extracted, decision, chosen_text, score_table)
-    requested_model = model or get_default_model()
-    resolved_model = resolve_model(requested_model)
+    resolved_model = get_large_model()
     trace_lines = [
         f"AI_CALL call_id=llm5_safety model={resolved_model} response_format=json_object"
     ]
@@ -511,11 +515,12 @@ def run_llm5_safety(
     
     t0 = time.perf_counter()
     try:
-        resp = get_llm_client().chat.completions.create(
-            model=resolved_model,
+        resp = generate_completion(
+            model_type="large",
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}],
         )
+        resolved_model = resp.model_name
     except Exception as e:
         dt_ms = int((time.perf_counter() - t0) * 1000)
         _ai_trace_log_response(
@@ -537,7 +542,7 @@ def run_llm5_safety(
         )
     
     dt_ms = int((time.perf_counter() - t0) * 1000)
-    raw = resp.choices[0].message.content or ""
+    raw = resp.content or ""
     
     try:
         parsed = _parse_json_with_fallback(raw)
@@ -581,4 +586,5 @@ def run_llm5_safety(
     
     _ai_trace_log_response("llm5_safety", resolved_model, raw, parsed=parsed, duration_ms=dt_ms)
     parsed["model_used"] = resolved_model
+    parsed["cost_usd"] = resp.cost_usd
     return parsed

@@ -4,7 +4,7 @@ import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from llm_client import get_default_model, get_llm_client, resolve_model, LLMError
+from llm_client import LLMError, generate_completion, get_large_model
 from prompts import LLM1_VISUAL, LLM2
 from ai_trace import (
     _ai_trace_image_lines,
@@ -79,8 +79,7 @@ def run_profile_eval_llm(extracted: Dict[str, Any], model: str | None = None) ->
     prompts_text = " | ".join([f"{p.get('prompt', '')}: {p.get('answer', '')}" for p in prompts_list if p.get("answer")])
 
     prompt = LLM2(home_town, job_title, university, prompts_text)
-    requested_model = model or get_default_model()
-    resolved_model = resolve_model(requested_model)
+    resolved_model = get_large_model()
     trace_lines = [
         f"AI_CALL call_id=profile_eval_llm model={resolved_model} response_format=json_object"
     ]
@@ -89,11 +88,12 @@ def run_profile_eval_llm(extracted: Dict[str, Any], model: str | None = None) ->
 
     t0 = time.perf_counter()
     try:
-        resp = get_llm_client().chat.completions.create(
-            model=resolved_model,
+        resp = generate_completion(
+            model_type="large",
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}],
         )
+        resolved_model = resp.model_name
     except Exception as e:
         dt_ms = int((time.perf_counter() - t0) * 1000)
         _ai_trace_log_response(
@@ -115,7 +115,7 @@ def run_profile_eval_llm(extracted: Dict[str, Any], model: str | None = None) ->
         )
     
     dt_ms = int((time.perf_counter() - t0) * 1000)
-    raw = resp.choices[0].message.content or ""
+    raw = resp.content or ""
     
     clean_raw = raw.strip()
     if clean_raw.startswith("```json"):
@@ -171,6 +171,7 @@ def run_profile_eval_llm(extracted: Dict[str, Any], model: str | None = None) ->
     
     parsed = normalize_dashes(parsed)
     parsed["model_used"] = resolved_model
+    parsed["cost_usd"] = resp.cost_usd
     _ai_trace_log_response(
         "profile_eval_llm",
         resolved_model,
@@ -187,8 +188,7 @@ def run_llm1_visual(
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     prompt = LLM1_VISUAL()
     payload = build_llm_batch_payload(image_paths, prompt=prompt)
-    requested_model = model or get_default_model()
-    resolved_model = resolve_model(requested_model)
+    resolved_model = get_large_model()
     trace_lines = [
         f"AI_CALL call_id=llm1_visual model={resolved_model} response_format=json_object"
     ]
@@ -198,11 +198,12 @@ def run_llm1_visual(
     
     t0 = time.perf_counter()
     try:
-        resp = get_llm_client().chat.completions.create(
-            model=resolved_model,
+        resp = generate_completion(
+            model_type="large",
             response_format={"type": "json_object"},
             messages=payload.get("messages", []),
         )
+        resolved_model = resp.model_name
     except Exception as e:
         dt_ms = int((time.perf_counter() - t0) * 1000)
         _ai_trace_log_response(
@@ -224,7 +225,7 @@ def run_llm1_visual(
         )
     
     dt_ms = int((time.perf_counter() - t0) * 1000)
-    raw = resp.choices[0].message.content or ""
+    raw = resp.content or ""
     
     clean_raw = raw.strip()
     if clean_raw.startswith("```json"):
@@ -287,6 +288,7 @@ def run_llm1_visual(
     )
     meta = payload.get("meta", {})
     meta["model_used"] = resolved_model
+    meta["cost_usd"] = resp.cost_usd
     return parsed, meta
 
 

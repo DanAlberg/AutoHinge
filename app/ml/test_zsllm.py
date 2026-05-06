@@ -13,7 +13,7 @@ if APP_DIR not in sys.path:
 import config # load .env explicitly
 os.environ.setdefault("LLM_PROVIDER", "gemini")
 
-from llm_client import get_llm_client, get_default_model
+from llm_client import generate_completion, get_large_model
 
 # ---------------------------------------------------------
 # CONFIGURATION - EDIT THESE VARIABLES FOR YOUR TESTS
@@ -80,7 +80,6 @@ def run_test():
         return
 
     print(f"Found {len(image_paths)} images. Proceeding with requests...\n")
-    client = get_llm_client()
     
     # Initialize CSV if it doesn't exist
     file_exists = os.path.isfile(OUTPUT_CSV)
@@ -135,9 +134,10 @@ def run_test():
             
             t0 = time.perf_counter()
             try:
-                resp = client.chat.completions.create(model=current_model, messages=messages)
+                os.environ["GEMINI_LARGE_MODEL"] = current_model
+                resp = generate_completion(model_type="large", messages=messages)
                 latency = int((time.perf_counter() - t0) * 1000)
-                raw_response = resp.choices[0].message.content.strip()
+                raw_response = resp.content.strip()
                 
                 # Split by lines
                 lines = [line.strip() for line in raw_response.split('\n') if line.strip()]
