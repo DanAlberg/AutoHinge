@@ -171,7 +171,7 @@ def _extract_profiles_from_list(xml: str) -> List[Dict[str, Any]]:
         
         # Sort nodes by top y-coordinate
         nodes.sort(key=lambda n: n["y"])
-        ignore_prefixes = ["Your turn", "Their turn", "Hidden", "Matches", "Discover", "Standouts", "Likes You", "Profile Hub", "Inactive chats are hidden", "You‘re nearing the limit"]
+        ignore_prefixes = ["Your turn", "Their turn", "Hidden", "Matches", "Discover", "Standouts", "Likes You", "Profile Hub", "Inactive chats are hidden", "You‘re nearing the limit", "You‘re at the limit", "You‘re over the limit"]
         
         # In the XML, Name and Message are siblings inside a view:
         # <node index="0" text="Priyaa" .../>

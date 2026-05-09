@@ -22,6 +22,47 @@ def _b64_image(image_path: str) -> str:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
+def _b64_image_with_label(image_path: str, label: str) -> str:
+    import cv2
+    import numpy as np
+
+    with open(image_path, "rb") as f:
+        bytes_data = f.read()
+    numpyarray = np.asarray(bytearray(bytes_data), dtype=np.uint8)
+    img = cv2.imdecode(numpyarray, cv2.IMREAD_UNCHANGED)
+
+    if img is None:
+        raise ValueError(f"Failed to decode image from path: {image_path}")
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 1.0
+    thickness = 2
+
+    # Get text size
+    (text_width, text_height), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+
+    x, y = 10, 30
+    
+    # Handle both 3-channel (BGR) and 4-channel (BGRA) images safely
+    if len(img.shape) == 3 and img.shape[2] == 4:
+        bg_color = (0, 0, 0, 255)
+        txt_color = (255, 255, 255, 255)
+    else:
+        bg_color = (0, 0, 0)
+        txt_color = (255, 255, 255)
+
+    # Draw black filled rectangle
+    cv2.rectangle(img, (x - 5, y - text_height - 5), (x + text_width + 5, y + baseline + 5), bg_color, cv2.FILLED)
+    # Draw white text
+    cv2.putText(img, label, (x, y), font, font_scale, txt_color, thickness, cv2.LINE_AA)
+
+    is_success, buffer = cv2.imencode(".png", img)
+    if not is_success:
+        raise ValueError(f"Failed to encode modified image: {image_path}")
+        
+    return base64.b64encode(buffer).decode("utf-8")
+
+
 def build_llm_batch_payload(
     screenshots: List[str],
     prompt: Optional[str] = None,
@@ -34,10 +75,11 @@ def build_llm_batch_payload(
 
     if format == "openai_messages":
         content_parts = [{"type": "text", "text": prompt}]
-        for p in existing:
+        for i, p in enumerate(existing):
+            label = f"photo_{i + 1}"
             content_parts.append({
                 "type": "image_url",
-                "image_url": {"url": f"data:image/png;base64,{_b64_image(p)}"},
+                "image_url": {"url": f"data:image/png;base64,{_b64_image_with_label(p, label)}"},
             })
         return {
             "format": "openai_messages",
