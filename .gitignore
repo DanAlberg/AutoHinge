@@ -30,3 +30,6 @@ app/ml/*.pkl
 app/ml/*.npy
 app/ml/zsllm_test_results.csv
 ml/diagnostics/
+
+#Graphs
+app/graphs/*.png
