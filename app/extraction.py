@@ -5,7 +5,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from llm_client import LLMError, generate_completion, get_large_model
-from prompts import LLM1_VISUAL, LLM2
+from prompts import LLM1_VISUAL, LLM2, LLM_DUPE_DETECT
 from ai_trace import (
     _ai_trace_image_lines,
     _ai_trace_log,
@@ -332,6 +332,38 @@ def run_llm1_visual(
     meta["model_used"] = resolved_model
     meta["cost_usd"] = resp.cost_usd
     return parsed, meta
+
+
+def run_duplicate_verification(old_profile: Dict[str, Any], new_profile: Dict[str, Any], model: str | None = None) -> Tuple[bool, Dict[str, Any]]:
+    """Uses a fast LLM call to verify if two profiles represent the exact same person. Returns (is_same, full_json_response)."""
+    old_json = json.dumps(old_profile, indent=2, ensure_ascii=False)
+    new_json = json.dumps(new_profile, indent=2, ensure_ascii=False)
+    prompt = LLM_DUPE_DETECT(old_json, new_json)
+    resolved_model = model or get_large_model() # Default to large, caller can pass small
+
+    try:
+        resp = generate_completion(
+            model_type="small" if resolved_model != get_large_model() else "large",
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.content or ""
+        clean_raw = raw.strip()
+        if clean_raw.startswith("```json"):
+            clean_raw = clean_raw[7:]
+        elif clean_raw.startswith("```"):
+            clean_raw = clean_raw[3:]
+        if clean_raw.endswith("```"):
+            clean_raw = clean_raw[:-3]
+        clean_raw = clean_raw.strip()
+
+        parsed = json.loads(clean_raw or "{}")
+        if isinstance(parsed, dict):
+            return bool(parsed.get("is_same_person", False)), parsed
+    except Exception as e:
+        _log(f"[VERIFY] LLM duplicate verification failed: {e}")
+    
+    return False, {}
 
 
 def _build_extracted_profile(

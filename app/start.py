@@ -27,7 +27,7 @@ from rich import print as rprint
 import config  # ensure .env is loaded early
 
 from helper_functions import ensure_adb_running, connect_device, get_screen_resolution, open_hinge
-from extraction import run_llm1_visual, run_profile_eval_llm, _build_extracted_profile
+from extraction import run_llm1_visual, run_profile_eval_llm, _build_extracted_profile, run_duplicate_verification
 from openers import run_llm3_long, run_llm3_short, run_llm3_5_critique, run_llm4_long, run_llm4_short, run_llm4_5_critique, run_llm5_safety
 from llm_client import LLMError
 from profile_utils import _get_core, _norm_value
@@ -41,6 +41,7 @@ from sqlite_store import (
     update_profile_opening_pick,
     update_profile_verdict,
     update_profile_critique_data,
+    check_for_rerun,
 )
 from ui_scan import (
     _bounds_visible,
@@ -882,9 +883,10 @@ def _run_single_profile(
     scan_nodes = scan_result.get("nodes")
 
     # --- EXPERIMENTAL ML VALIDATION SUITE (START) ---
-    # Disabled by default. Enabled via --validate-ml
+    # Temporarily bypassed / commented out to avoid orphaned runs and clean up logic
     dan_rating = None
     ml_pred = {}
+    """
     if args.validate_ml:
         from manual_scoring import collect_manual_rating, update_dan_rating, log_eval_metrics
         
@@ -923,6 +925,7 @@ def _run_single_profile(
                     log_state["ml_aesthetic_prediction"] = ml_pred
             except Exception as e:
                 print(f"[ML] Aesthetic scoring failed: {e}")
+    """
     # --- EXPERIMENTAL ML VALIDATION SUITE (END) ---
 
     if log_state:
@@ -1065,51 +1068,73 @@ def _run_single_profile(
         }
         _write_run_log(out_path, log_state)
 
-    # Ensure profile is in DB unconditionally and get PID for CSV logging
-    pid = None
+    # --- DUPLICATE CHECK ---
+    linked_profile_id = None
     try:
-        score_breakdown = f"decision={decision} long_score={long_score} short_score={short_score}\n\n" + score_table
-        pid = upsert_profile_flat(
-            extracted,
-            eval_result,
-            long_score=int(long_score),
-            short_score=int(short_score),
-            score_breakdown=score_breakdown,
-        )
-        if pid is not None:
-            if dan_rating is not None:
-                update_dan_rating(pid, dan_rating)
-            
-            # --- EXPERIMENTAL ML VALIDATION SUITE LOGGING (START) ---
-            if args.validate_ml:
-                # Run the 5-path ML ablation study and log to CSV
-                from ml.ml_validation import run_validation_ablation
-                name = core_bio.get("Name", "Unknown")
-                age = core_bio.get("Age", 0)
-                ml_pred_log = log_state.get("ml_aesthetic_prediction", {})
-                visual_traits = (extracted.get("Visual Analysis (Inferred From Images)") or {}).get("Inferred Visual Traits Summary") or {}
-                llm_tier = visual_traits.get("Apparent Attractiveness Tier", "")
-                llm_body_type = visual_traits.get("Apparent Build Category", "")
-                
-                run_validation_ablation(
-                    pid=pid,
-                    name=name,
-                    age=age,
-                    manual_rating=dan_rating,
-                    image_paths=photo_paths,
-                    llm_tier=llm_tier,
-                    llm_body_type=llm_body_type,
-                    llm_long_score=int(long_score),
-                    llm_short_score=int(short_score),
-                    ml_pred=ml_pred_log
-                )
-            # --- EXPERIMENTAL ML VALIDATION SUITE LOGGING (END) ---
-            
+        if name_val and age_val and height_val:
+            age_int = int(age_val)
+            height_int = int(height_val)
+            rerun_candidates = check_for_rerun(str(name_val).strip(), age_int, height_int)
+            if rerun_candidates:
+                print(f"[VERIFY] Found {len(rerun_candidates)} potential duplicate candidate(s). Verifying with LLM...")
+                # We'll just verify against the most recent matching one
+                for cand in rerun_candidates:
+                    # Construct a dummy 'extracted' dict from the old flat row for the LLM
+                    old_prof_data = {
+                        "Name": cand.get("Name"),
+                        "Age": cand.get("Age"),
+                        "Job_title": cand.get("Job_title"),
+                        "University": cand.get("University"),
+                        "prompt_1": cand.get("prompt_1"),
+                        "answer_1": cand.get("answer_1"),
+                        "prompt_2": cand.get("prompt_2"),
+                        "answer_2": cand.get("answer_2"),
+                        "prompt_3": cand.get("prompt_3"),
+                        "answer_3": cand.get("answer_3"),
+                        "Apparent_Skin_Tone": cand.get("Apparent_Skin_Tone"),
+                        "Apparent_Build_Category": cand.get("Apparent_Build_Category"),
+                        "Hair_Color": cand.get("Hair_Color"),
+                        "Apparent_Ethnic_Features": cand.get("Apparent_Ethnic_Features"),
+                        "Photo1_desc": cand.get("Photo1_desc"),
+                        "Photo2_desc": cand.get("Photo2_desc"),
+                    }
+                    new_prof_data = {
+                        "Name": core_bio.get("Name"),
+                        "Age": core_bio.get("Age"),
+                        "Job_title": core_bio.get("Job title"),
+                        "University": core_bio.get("University"),
+                        "Prompts": extracted.get("Profile Content (Free Description)", {}).get("Profile Prompts and Answers"),
+                        "Visual_Traits": extracted.get("Visual Analysis (Inferred From Images)", {}).get("Inferred Visual Traits Summary"),
+                        "Photo_1": extracted.get("Profile Content (Free Description)", {}).get("Extensive Description of Photo 1", {}).get("description"),
+                        "Photo_2": extracted.get("Profile Content (Free Description)", {}).get("Extensive Description of Photo 2", {}).get("description"),
+                    }
+                    is_same, dupe_response = run_duplicate_verification(old_prof_data, new_prof_data, model=os.getenv("LLM_SMALL_MODEL") or os.getenv("GEMINI_SMALL_MODEL"))
+                    if log_state:
+                        log_state["duplicate_check"] = dupe_response
+                        _write_run_log(out_path, log_state)
+                    
+                    if is_same:
+                        _alert_user("🚨 IDENTIFIED RETURNING PROFILE 🚨")
+                        alert_msg = (
+                            f"🚨 [bold red]IDENTIFIED RETURNING PROFILE[/bold red] 🚨\n\n"
+                            f"Name: {cand.get('Name')}\n"
+                            f"Previously seen on: {cand.get('timestamp')}\n"
+                            f"Previous Verdict: [bold]{cand.get('verdict')}[/bold]\n"
+                            f"Previous Long Score: {cand.get('long_score')}\n"
+                            f"Previous Short Score: {cand.get('short_score')}\n"
+                            f"Action: Profile will be treated as new, but linked in DB."
+                        )
+                        console.print(Panel(alert_msg, border_style="red", expand=False))
+                        linked_profile_id = cand.get("id")
+                        
+                        # TODO: Remove this after testing
+                        input("Press Enter to acknowledge returning profile and continue...")
+                        break
     except Exception as e:
-        print(f"[DB/CSV] Initial profile upsert and eval logging failed: {e}")
-        # Re-raise LLMErrors from the VLM so they hit the global exception handler
-        if isinstance(e, LLMError):
-            raise e
+        print(f"[VERIFY] Duplicate check failed: {e}")
+
+    # Ensure profile is evaluated, but DO NOT insert into DB until an action is taken
+    score_breakdown = f"decision={decision} long_score={long_score} short_score={short_score}\n\n" + score_table
 
     # --- INTERACTION LOOP (Retry Point) ---
     manual_override = ""
@@ -1680,12 +1705,46 @@ def _run_single_profile(
             # SQL logging (only after irreversible action)
             if irreversible_action_taken:
                 try:
+                    pid = upsert_profile_flat(
+                        extracted,
+                        eval_result,
+                        long_score=int(long_score),
+                        short_score=int(short_score),
+                        score_breakdown=score_breakdown,
+                        linked_profile_id=linked_profile_id
+                    )
                     if pid is not None:
                         update_profile_verdict(pid, decision)
                         if isinstance(llm3_result, dict) and llm3_result:
                             update_profile_opening_messages_json(pid, llm3_result)
                         if isinstance(llm4_result, dict) and llm4_result:
                             update_profile_opening_pick(pid, llm4_result)
+                        
+                        # ML validation logging (if enabled)
+                        """
+                        if args.validate_ml and dan_rating is not None:
+                            update_dan_rating(pid, dan_rating)
+                            from ml.ml_validation import run_validation_ablation
+                            name = core_bio.get("Name", "Unknown")
+                            age = core_bio.get("Age", 0)
+                            ml_pred_log = log_state.get("ml_aesthetic_prediction", {})
+                            visual_traits = (extracted.get("Visual Analysis (Inferred From Images)") or {}).get("Inferred Visual Traits Summary") or {}
+                            llm_tier = visual_traits.get("Apparent Attractiveness Tier", "")
+                            llm_body_type = visual_traits.get("Apparent Build Category", "")
+                            
+                            run_validation_ablation(
+                                pid=pid,
+                                name=name,
+                                age=age,
+                                manual_rating=dan_rating,
+                                image_paths=photo_paths,
+                                llm_tier=llm_tier,
+                                llm_body_type=llm_body_type,
+                                llm_long_score=int(long_score),
+                                llm_short_score=int(short_score),
+                                ml_pred=ml_pred_log
+                            )
+                        """
                 except Exception as e:
                     print(f"[sql] log failed: {e}")
             else:

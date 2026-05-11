@@ -49,7 +49,7 @@ def database():
 
 def generate_daily_ratio_graph(df):
     output_dir = 'graphs'
-    output_file = os.path.join(output_dir, 'daily_ratios.png')
+    output_file = os.path.join(output_dir, '01_daily_activity.png')
     os.makedirs(output_dir, exist_ok=True)
 
     df = df.copy()
@@ -184,7 +184,7 @@ def generate_heatmap(df):
     plt.title('Match Ratio "Sweet Spots" (Day vs. Time)')
     os.makedirs('graphs', exist_ok=True)
     plt.tight_layout()
-    plt.savefig('graphs/heatmap_sweet_spots.png')
+    plt.savefig('graphs/02_best_times_heatmap.png')
     plt.close()   
 
 def generate_tod_rolling(df):
@@ -257,9 +257,95 @@ def generate_tod_rolling(df):
     
     os.makedirs('graphs', exist_ok=True)
     plt.tight_layout()
-    plt.savefig('graphs/tod_rolling_ratio.png', dpi=150)
+    plt.savefig('graphs/03_time_of_day_trends.png', dpi=150)
     plt.close()
-    print("Graph successfully generated and saved to: graphs/tod_rolling_ratio.png")
+    print("Graph successfully generated and saved to: graphs/03_time_of_day_trends.png")
+
+def generate_tod_rolling_recent(df):
+    # Filter for the last 3 months
+    max_date = df['timestamp'].max()
+    cutoff_date = max_date - pd.DateOffset(months=3)
+    df_recent = df[df['timestamp'] >= cutoff_date].copy()
+    
+    # Filter to only look at profiles you liked
+    likes_only = df_recent[df_recent['is_like'] == 1].copy()
+    
+    # If no data in the last 3 months, return
+    if likes_only.empty:
+        print("No recent data for 3-month TOD graph.")
+        return
+        
+    likes_only['hour'] = likes_only['timestamp'].dt.hour
+    
+    # Aggregate by hour
+    tod = likes_only.groupby('hour').agg(
+        likes=('is_like', 'sum'),
+        matches=('is_match', 'sum')
+    ).reset_index()
+    
+    # Ensure all 24 hours exist in the dataframe to prevent gaps in the graph
+    all_hours = pd.DataFrame({'hour': range(24)})
+    tod = all_hours.merge(tod, on='hour', how='left').fillna(0)
+    
+    # Cyclical wrap-around for rolling average (so midnight smoothly connects to 11 PM)
+    padded = pd.concat([tod.iloc[-1:], tod, tod.iloc[:1]]).reset_index(drop=True)
+    padded['rolling_likes'] = padded['likes'].rolling(window=3, center=True).sum()
+    padded['rolling_matches'] = padded['matches'].rolling(window=3, center=True).sum()
+    
+    # Extract the original 24 hours back out
+    smoothed = padded.iloc[1:25].copy().reset_index(drop=True)
+    
+    # Only calculate ratio if you sent at least 5 likes in that 3-hour window to kill noise
+    smoothed['smoothed_ratio'] = np.where(smoothed['rolling_likes'] >= 5, 
+                                          smoothed['rolling_matches'] / smoothed['rolling_likes'], 
+                                          np.nan)
+    
+    # --- Plotting Code ---
+    fig, ax1 = plt.subplots(figsize=(14, 7))
+    ax2 = ax1.twinx()
+    
+    # Bar chart for volume (Likes Sent)
+    ax1.bar(smoothed['hour'], smoothed['rolling_likes'], color='#e0e2e4', label='Likes Sent (3h Rolling Volume)')
+    
+    # Line chart for Match Ratio
+    ax2.plot(smoothed['hour'], smoothed['smoothed_ratio'], color='#2ECC71', marker='o', linewidth=3, markersize=8, label='Match Ratio (3h Rolling)')
+    
+    # Layering
+    ax1.set_zorder(1)
+    ax2.set_zorder(2)
+    ax2.patch.set_visible(False)
+    
+    # Formatting
+    ax1.set_title('Match Ratio by Time of Day (Last 3 Months, 3-Hour Rolling Avg)', fontsize=16, fontweight='bold', pad=15)
+    ax1.set_xlabel('Hour of Day', fontweight='bold', fontsize=12, labelpad=10)
+    ax1.set_ylabel('Likes Sent Volume', color='grey', fontweight='bold', fontsize=12)
+    ax2.set_ylabel('Match Ratio Percentage', color='black', fontweight='bold', fontsize=12)
+    
+    # X-Axis labels (24 hour format)
+    hours_labels = [f"{h:02d}:00" for h in range(24)]
+    ax1.set_xticks(range(24))
+    ax1.set_xticklabels(hours_labels, rotation=45)
+    ax2.yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
+    
+    # Styling
+    ax1.grid(True, axis='y', color='lightgrey', linestyle='--', linewidth=0.7)
+    for spine in ['top', 'right', 'left', 'bottom']:
+        ax1.spines[spine].set_color('lightgrey')
+        ax2.spines[spine].set_color('lightgrey')
+    ax2.spines['top'].set_visible(False)
+    ax1.spines['top'].set_visible(False)
+    
+    # Legend
+    lines_1, labels_1 = ax1.get_legend_handles_labels()
+    lines_2, labels_2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper left', fontsize=11, frameon=True, shadow=True)
+    
+    os.makedirs('graphs', exist_ok=True)
+    plt.tight_layout()
+    plt.savefig('graphs/03b_time_of_day_recent.png', dpi=150)
+    plt.close()
+    print("Graph successfully generated and saved to: graphs/03b_time_of_day_recent.png")
+
 
 def generate_age_ratio(df):
     likes_only = df[df['is_like'] == 1].copy()
@@ -278,7 +364,7 @@ def generate_age_ratio(df):
     plt.bar(age_stats['Age'], age_stats['match_ratio'], color='#2ecc71')
     plt.title('Match Ratio by Age (Min. 3 Likes Sent)')
     plt.gca().yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
-    plt.savefig('graphs/age_match_ratio.png')
+    plt.savefig('graphs/04_age_demographics.png')
     plt.close()
 
 def generate_cohort_strategy_ratio(df):
@@ -378,10 +464,10 @@ def generate_cohort_strategy_ratio(df):
         ax.spines[spine].set_visible(False)
         
     plt.tight_layout()
-    plt.savefig('graphs/cohort_strategy_ratio.png', dpi=150)
+    plt.savefig('graphs/05_strategy_performance.png', dpi=150)
     plt.close()
     
-    print("Graph successfully generated and saved to: graphs/cohort_strategy_ratio.png")
+    print("Graph successfully generated and saved to: graphs/05_strategy_performance.png")
 
 if __name__ == "__main__":
     df = database()
@@ -389,5 +475,6 @@ if __name__ == "__main__":
         generate_daily_ratio_graph(df)
         generate_heatmap(df)
         generate_tod_rolling(df)
+        generate_tod_rolling_recent(df)
         generate_age_ratio(df)
         generate_cohort_strategy_ratio(df)

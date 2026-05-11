@@ -447,6 +447,25 @@ def LLM4_5_CRITIQUE(llm4_result: Dict[str, Any], extracted: Dict[str, Any], vari
     )
 
 
+def LLM_DUPE_DETECT(old_profile_json: str, new_profile_json: str) -> str:
+    """Prompt for verifying if two profiles represent the exact same person."""
+    return (
+        "You are an expert identity verifier for a dating app system.\n"
+        "Your task is to determine if these two profile snapshots, seen at different times, belong to the EXACT SAME human being.\n"
+        "The system has already flagged them as potential matches based on Name, Age, and Height. People sometimes reset their accounts and change their prompts or photos, but their fundamental physical descriptions (like skin tone, build, facial features) and core demographic details (like university or hometown) usually remain consistent.\n\n"
+        "OLD PROFILE SNAPSHOT (from database):\n"
+        f"{old_profile_json}\n\n"
+        "NEW PROFILE SNAPSHOT (just scraped):\n"
+        f"{new_profile_json}\n\n"
+        "Analyze the visual trait descriptions, the job, the prompts, and the photos' content.\n"
+        "Are they the same person? Return YES if it is highly likely the same person who just recreated their profile, or NO if they are clearly two different people with a coincidental name/height match.\n\n"
+        "Output JSON only:\n"
+        "{\n"
+        '  "is_same_person": true | false,\n'
+        '  "reason": "Short explanation of your reasoning"\n'
+        "}\n"
+    )
+
 def LLM5_SAFETY(extracted: Dict[str, Any], decision: str, chosen_text: str, score_table: str) -> str:
     elite_mode = False
     if "[ELITE_MODE_FLAG]" in score_table:

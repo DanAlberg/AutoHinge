@@ -164,13 +164,9 @@ def init_db(db_path: Optional[str] = None) -> None:
             """
         )
 
-        # Dedup: case-insensitive name + age + height_cm
-        cur.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_profiles_unique
-            ON profiles(Name COLLATE NOCASE, Age, Height_cm);
-            """
-        )
+        # Ensure the unique index is dropped if it existed from earlier versions
+        cur.execute("DROP INDEX IF EXISTS idx_profiles_unique;")
+        
         extra_cols = [
             "long_score INTEGER",
             "short_score INTEGER",
@@ -214,6 +210,7 @@ def init_db(db_path: Optional[str] = None) -> None:
             "dan_rating INTEGER",
             "matched INTEGER DEFAULT 0",
             "match_time TEXT",
+            "linked_profile_id INTEGER",
             # New columns for match handling
             "status TEXT",
             "last_activity TEXT",
@@ -367,12 +364,7 @@ def rebuild_profiles_table(db_path: Optional[str] = None) -> None:
             f"INSERT INTO profiles ({col_list}) SELECT {col_list} FROM profiles_old;"
         )
         cur.execute("DROP TABLE profiles_old;")
-        cur.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_profiles_unique
-            ON profiles(Name COLLATE NOCASE, Age, Height_cm);
-            """
-        )
+        cur.execute("DROP INDEX IF EXISTS idx_profiles_unique;")
         con.commit()
     except Exception:
         con.rollback()
@@ -808,6 +800,35 @@ def _flatten_enrichment(enrichment: Dict[str, Any]) -> Dict[str, Any]:
 
 # ---------------------- Upsert API ----------------------
 
+def check_for_rerun(name: str, age: int, height_cm: int, db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Check if a profile with the same name, height, and similar age (+/- 1) has been seen before
+    and has a completed verdict.
+    """
+    db_path = db_path or get_db_path()
+    if not os.path.exists(db_path):
+        return []
+    
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    try:
+        cur = con.cursor()
+        cur.execute(
+            """
+            SELECT * FROM profiles 
+            WHERE Name COLLATE NOCASE = ? 
+            AND Height_cm = ? 
+            AND Age BETWEEN ? AND ?
+            AND verdict IS NOT NULL AND verdict != ''
+            ORDER BY timestamp DESC
+            """,
+            (name, height_cm, age - 1, age + 1)
+        )
+        return [dict(row) for row in cur.fetchall()]
+    finally:
+        con.close()
+
+
 def upsert_profile_flat(
     extracted_profile: Dict[str, Any],
     enrichment: Dict[str, Any],
@@ -815,12 +836,12 @@ def upsert_profile_flat(
     short_score: int,
     score_breakdown: Optional[str] = None,
     timestamp: Optional[str] = None,
+    linked_profile_id: Optional[int] = None,
     db_path: Optional[str] = None
 ) -> Optional[int]:
     """
-    Flatten and UPSERT a profile row.
-    - Enforces UNIQUE(Name NOCASE, Age, Height_cm) with ON CONFLICT DO NOTHING.
-    - Returns rowid on insert; None if conflict (duplicate).
+    Flatten and INSERT a profile row.
+    - Returns rowid on insert.
     - Height and Age required; ValueError raised otherwise.
     """
     db_path = db_path or get_db_path()
@@ -837,6 +858,7 @@ def upsert_profile_flat(
         "short_score": int(short_score),
         "score_breakdown": (score_breakdown or ""),
         "timestamp": ts,
+        "linked_profile_id": linked_profile_id,
     }
 
     # Build insert with named parameters
@@ -851,7 +873,7 @@ def upsert_profile_flat(
         *visual_cols,
         "home_country_iso","home_country_confidence","home_country_modifier","job_normalized_title","job_est_salary_gbp",
         "job_band","job_confidence","job_band_reason","job_modifier","university_elite","matched_university_name","university_modifier",
-        "long_score","short_score","score_breakdown","timestamp"
+        "long_score","short_score","score_breakdown","timestamp","linked_profile_id"
     ]
     placeholders = ",".join([f":{c}" for c in cols])
     col_list = ",".join(cols)
@@ -862,16 +884,11 @@ def upsert_profile_flat(
         cur.execute(
             f"""
             INSERT INTO profiles ({col_list})
-            VALUES ({placeholders})
-            ON CONFLICT(Name, Age, Height_cm) DO NOTHING;
+            VALUES ({placeholders});
             """,
             row
         )
         con.commit()
-        if cur.rowcount == 0:
-            cur.execute("SELECT id FROM profiles WHERE Name = :Name AND Age = :Age AND Height_cm = :Height_cm", row)
-            existing = cur.fetchone()
-            return existing[0] if existing else None
         return cur.lastrowid
     finally:
         con.close()
