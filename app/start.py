@@ -32,7 +32,7 @@ from openers import run_llm3_long, run_llm3_short, run_llm3_5_critique, run_llm4
 from llm_client import LLMError
 from profile_utils import _get_core, _norm_value
 from runtime import _is_run_json_enabled, _log, set_verbose, set_interrupt_check
-from scoring import _classify_preference_flag, _format_score_table, _score_profile_long, _score_profile_short
+from scoring import _classify_preference_flag, _format_score_table, _score_profile_long, _score_profile_short, DEFAULT_T_LONG, DEFAULT_T_SHORT, DEFAULT_DOM_MARGIN
 
 from sqlite_store import (
     get_db_path,
@@ -831,6 +831,31 @@ def _run_single_profile(
     ui_map = scan_result.get("ui_map", {})
     biometrics = scan_result.get("biometrics", {})
     run_folder = scan_result.get("run_folder", "")
+
+    # Hard abort if core biometrics failed to extract
+    name_val = biometrics.get("Name")
+    age_val = biometrics.get("Age")
+    height_val = biometrics.get("Height")
+
+    missing_fields = []
+    if not name_val or str(name_val).strip() == "":
+        missing_fields.append("Name")
+    if age_val is None or str(age_val).strip() == "":
+        missing_fields.append("Age")
+    if height_val is None or str(height_val).strip() == "":
+        missing_fields.append("Height")
+
+    if missing_fields:
+        missing_str = ", ".join(missing_fields)
+        error_text = f"Failed to extract core biometrics: [bold]{missing_str}[/bold]\n"
+        error_text += f"Extraction returned: Name={name_val}, Age={age_val}, Height={height_val}\n"
+        error_text += "This is a fatal error requiring user intervention."
+        console.print(Panel(error_text, title="[bold red]CRITICAL ERROR[/bold red]", border_style="red"))
+        _alert_user(f"CRITICAL: Failed to extract {missing_str}")
+        
+        # We need to completely abort the application, not just skip the profile.
+        # We return a specific exit code (e.g., 4) to bubble up and halt the main loop.
+        return 4
     
     # Initialize log state and output paths using the run folder
     if run_folder:
@@ -961,32 +986,6 @@ def _run_single_profile(
         log_state["extracted_profile"] = extracted
         _write_run_log(out_path, log_state)
 
-    # Hard abort if core biometrics failed to extract
-    core_bio = extracted.get("Core Biometrics (Objective)", {})
-    name_val = core_bio.get("Name")
-    age_val = core_bio.get("Age")
-    height_val = core_bio.get("Height")
-
-    missing_fields = []
-    if not name_val or str(name_val).strip() == "":
-        missing_fields.append("Name")
-    if age_val is None or str(age_val).strip() == "":
-        missing_fields.append("Age")
-    if height_val is None or str(height_val).strip() == "":
-        missing_fields.append("Height")
-
-    if missing_fields:
-        missing_str = ", ".join(missing_fields)
-        error_text = f"Failed to extract core biometrics: [bold]{missing_str}[/bold]\n"
-        error_text += f"Extraction returned: Name={name_val}, Age={age_val}, Height={height_val}\n"
-        error_text += "This is a fatal error requiring user intervention."
-        console.print(Panel(error_text, title="[bold red]CRITICAL ERROR[/bold red]", border_style="red"))
-        _alert_user(f"CRITICAL: Failed to extract {missing_str}")
-        
-        # We need to completely abort the application, not just skip the profile.
-        # We return a specific exit code (e.g., 4) to bubble up and halt the main loop.
-        return 4
-
     t0 = time.perf_counter()
     eval_result = run_profile_eval_llm(
         extracted,
@@ -1018,23 +1017,23 @@ def _run_single_profile(
     long_score = long_score_result.get("score", 0) if isinstance(long_score_result, dict) else 0
     short_score = short_score_result.get("score", 0) if isinstance(short_score_result, dict) else 0
 
-    T_LONG = 15
-    T_SHORT = 20
-    DOM_MARGIN = 10
+    T_LONG = DEFAULT_T_LONG
+    T_SHORT = DEFAULT_T_SHORT
+    DOM_MARGIN = DEFAULT_DOM_MARGIN
 
-    long_ok = long_score >= T_LONG
-    short_ok = short_score >= T_SHORT
     long_delta = long_score - T_LONG
     short_delta = short_score - T_SHORT
 
-    if not long_ok and not short_ok:
-        decision = "reject"
-    elif long_ok and (not short_ok or long_delta >= short_delta + DOM_MARGIN):
+    pref_flag = _classify_preference_flag(long_score, short_score, t_long=T_LONG, t_short=T_SHORT, dominance_margin=DOM_MARGIN)
+    if pref_flag == "LONG":
         decision = "long_pickup"
-    elif short_ok and (not long_ok or short_delta >= long_delta + DOM_MARGIN):
+    elif pref_flag == "SHORT":
         decision = "short_pickup"
     else:
-        decision = "long_pickup"
+        decision = "reject"
+
+    long_ok = long_score >= T_LONG
+    short_ok = short_score >= T_SHORT
 
     dating_intention = _norm_value((_get_core(extracted) or {}).get("Dating Intentions", ""))
     if dating_intention in {_norm_value("Short-term relationship")}:

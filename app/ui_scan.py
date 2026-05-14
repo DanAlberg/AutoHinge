@@ -2296,6 +2296,34 @@ def _scan_profile_single_pass(
 
         # Extract biometrics visible on this screen.
         updates = _extract_biometrics_from_nodes(nodes, scroll_area)
+
+        if updates and "Age" not in updates and not biometrics.get("Age"):
+            _log("[BIOMETRICS] Biometrics detected but Age is missing. Micro-scrolling down to reveal.")
+            for micro_attempt in range(2):
+                prev_nodes = nodes
+                nodes, delta = _scroll_and_capture(
+                    device,
+                    width,
+                    height,
+                    scroll_area,
+                    "down",
+                    prev_nodes,
+                    distance_px=200,
+                    duration_ms=400,
+                )
+                scroll_area = _find_scroll_area(nodes) or scroll_area
+                ui_map["scroll_area"] = scroll_area
+                offset += delta
+                new_updates = _extract_biometrics_from_nodes(nodes, scroll_area)
+                updates.update(new_updates)
+                if "Age" in updates:
+                    break
+                _log(f"[BIOMETRICS] Age not found after micro-scroll {micro_attempt + 1}")
+            
+            if "Age" not in updates:
+                _log("[BIOMETRICS] Age still not found after 2 micro-scrolls, aborting scan early")
+                break
+
         for k, v in updates.items():
             if _merge_biometrics_value(biometrics, k, v):
                 if k == "Biometrics Other Text":

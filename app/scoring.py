@@ -2,8 +2,7 @@ from typing import Any, Dict, List, Optional
 
 from profile_utils import _get_core, _get_visual, _norm_value, _split_csv
 
-HOME_COUNTRY_PLUS2 = {"NO", "SE", "DK", "FI", "IS", "EE", "LV", "LT", "UA", "RU", "BY"}
-HOME_COUNTRY_PLUS1 = {"IE", "DE", "FR", "NL", "BE", "LU", "CH", "AT", "IT", "ES", "PT", "PL", "CZ", "CA", "US", "AU", "NZ", "JP", "KR", "SG", "IL", "AE"}
+HOME_COUNTRY_PLUS = {"NO", "SE", "DK", "FI", "IS", "EE", "LV", "LT", "UA", "RU", "BY", "IE", "DE", "FR", "NL", "BE", "LU", "CH", "AT", "IT", "ES", "PT", "PL", "CZ", "CA", "US", "AU", "NZ", "JP", "KR", "SG", "IL", "AE", "GB"}
 HOME_COUNTRY_MINUS1 = {"AR", "BR", "CL", "CO", "PE", "EC", "UY", "PY", "BO", "VE", "GY", "SR", "ID", "MY", "TH", "VN", "PH", "KH", "LA", "MM", "BN"}
 
 def _parse_int(value: Any) -> Optional[int]:
@@ -129,18 +128,11 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     except Exception:
         declared_age_int = None
     if declared_age_int is not None:
-        if 18 <= declared_age_int <= 21:
-            record("Core Biometrics", "Age", "18-21", +20)
-        elif 22 <= declared_age_int <= 24:
-            record("Core Biometrics", "Age", "22-23", +30)
-        elif 25 <= declared_age_int <= 27:
-            record("Core Biometrics", "Age", "24-26", +20)
-        elif 28 <= declared_age_int <= 30:
-            record("Core Biometrics", "Age", "27-30", 0)
-        elif 31 <= declared_age_int <= 35:
-            record("Core Biometrics", "Age", "31-35", -15)
-        elif 36 <= declared_age_int <= 40:
-            record("Core Biometrics", "Age", "36-40", -25)
+        if declared_age_int < 25:
+            age_score = int(round(30 - 0.7 * (declared_age_int - 25)**2))
+        else:
+            age_score = int(round(30 - 0.85 * (declared_age_int - 25)**2))
+        record("Core Biometrics", "Age", declared_age, age_score)
 
     # Height weighting (declared height only)
     height = core_val("Height")
@@ -232,9 +224,9 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
         _norm_value("Negligible"): -1000,
         _norm_value("Low / Unattractive"): -1000,
         _norm_value("Limited / Below Average"): -20,
-        _norm_value("Average / Moderate"): 5,
-        _norm_value("High / Above Average"): 20,
-        _norm_value("Exceptional / Elite"): 40,
+        _norm_value("Average / Moderate"): 0,
+        _norm_value("High / Above Average"): 0,
+        _norm_value("Exceptional / Elite"): 0,
     }
     if attractiveness_norm in attractiveness_deltas:
         att_delta = attractiveness_deltas[attractiveness_norm]
@@ -269,14 +261,14 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     elif piercing_norm == _norm_value("Moderate"):
         record("Visual Analysis", "Visible Piercing Level", piercing, -25)
     elif piercing_norm == _norm_value("None visible"):
-        record("Visual Analysis", "Visible Piercing Level", piercing, +5)
+        record("Visual Analysis", "Visible Piercing Level", piercing, +10)
 
     build = visual_val("Apparent Build Category")
     build_norm = _norm_value(build)
     if build_norm == _norm_value("Obese/high body fat"):
         record("Visual Analysis", "Apparent Build Category", build, -1000)
     elif build_norm == _norm_value("Curvy (softer proportions)"):
-        record("Visual Analysis", "Apparent Build Category", build, -5)
+        record("Visual Analysis", "Apparent Build Category", build, +5)
     elif build_norm == _norm_value("Muscular/built"):
         record("Visual Analysis", "Apparent Build Category", build, +10)
 
@@ -328,9 +320,9 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
         record("Visual Analysis", "Presentation Red Flags", flag, -5)
 
     # Profile Evaluation (LLM2)
-    sugar_baby_flag = int(eval_result.get("sugar_baby_flag", 0) or 0)
-    if sugar_baby_flag == 1:
-        record("Profile Eval", "Sugar Baby Flag", "Yes", -10)
+    financial_expectation_flag = int(eval_result.get("financial_expectation_flag", 0) or 0)
+    if financial_expectation_flag == 1:
+        record("Profile Eval", "Financial Expectation Flag", "Yes", -20)
 
     job_band = _norm_value((eval_result.get("job") or {}).get("band", ""))
     if job_band == _norm_value("T0"):
@@ -350,9 +342,7 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     home_score = 0
     if home_iso == "US":
         home_score = 20
-    elif home_iso in HOME_COUNTRY_PLUS2:
-        home_score = 10
-    elif home_iso in HOME_COUNTRY_PLUS1:
+    elif home_iso in HOME_COUNTRY_PLUS:
         home_score = 5
     elif home_iso in HOME_COUNTRY_MINUS1:
         home_score = -10
@@ -483,18 +473,11 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
     except Exception:
         declared_age_int = None
     if declared_age_int is not None:
-        if 18 <= declared_age_int <= 22:
-            record("Core Biometrics", "Age", "18-22", +5)
-        elif 23 <= declared_age_int <= 27:
-            record("Core Biometrics", "Age", "23-25", +10)
-        elif 28 <= declared_age_int <= 30:
-            record("Core Biometrics", "Age", "28-30", 0)
-        elif 31 <= declared_age_int <= 35:
-            record("Core Biometrics", "Age", "31-35", -10)
-        elif 36 <= declared_age_int <= 40:
-            record("Core Biometrics", "Age", "36-40", -15)
-        elif declared_age_int >= 41:
-            record("Core Biometrics", "Age", "41+", -20)
+        if declared_age_int < 23:
+            age_score = int(round(30 - 0.4 * (declared_age_int - 23)**2))
+        else:
+            age_score = int(round(30 - 0.6 * (declared_age_int - 23)**2))
+        record("Core Biometrics", "Age", declared_age, age_score)
 
     # Height weighting (declared height only)
     height = core_val("Height")
@@ -634,9 +617,9 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
         _norm_value("Negligible"): -1000,
         _norm_value("Low / Unattractive"): -1000,
         _norm_value("Limited / Below Average"): -20,
-        _norm_value("Average / Moderate"): 5,
-        _norm_value("High / Above Average"): 20,
-        _norm_value("Exceptional / Elite"): 40,
+        _norm_value("Average / Moderate"): 0,
+        _norm_value("High / Above Average"): 0,
+        _norm_value("Exceptional / Elite"): 0,
     }
     if attractiveness_norm in attractiveness_deltas:
         att_delta = attractiveness_deltas[attractiveness_norm]
@@ -675,14 +658,14 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
     elif piercing_norm == _norm_value("Moderate"):
         record("Visual Analysis", "Visible Piercing Level", piercing, -25)
     elif piercing_norm == _norm_value("None visible"):
-        record("Visual Analysis", "Visible Piercing Level", piercing, +5)
+        record("Visual Analysis", "Visible Piercing Level", piercing, +10)
 
     build = visual_val("Apparent Build Category")
     build_norm = _norm_value(build)
     if build_norm == _norm_value("Obese/high body fat"):
         record("Visual Analysis", "Apparent Build Category", build, -1000)
     elif build_norm == _norm_value("Curvy (softer proportions)"):
-        record("Visual Analysis", "Apparent Build Category", build, -5)
+        record("Visual Analysis", "Apparent Build Category", build, +5)
     elif build_norm == _norm_value("Muscular/built"):
         record("Visual Analysis", "Apparent Build Category", build, +10)
 
@@ -692,6 +675,18 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
         record("Visual Analysis", "Apparent Skin Tone", skin, -20)
     elif skin_norm in {_norm_value("Dark-brown/chestnut"), _norm_value("Very dark/ebony/deep")}:
         record("Visual Analysis", "Apparent Skin Tone", skin, -1000)
+
+    ethnic = visual_val("Apparent Ethnic Features")
+    ethnic_norm = _norm_value(ethnic)
+    if ethnic_norm == _norm_value("Southeast Asian-presenting"):
+        record("Visual Analysis", "Apparent Ethnic Features", ethnic, -15)
+    elif ethnic_norm in {
+        _norm_value("Nordic/Scandinavian-presenting"),
+        _norm_value("Slavic/Eastern European-presenting"),
+    }:
+        record("Visual Analysis", "Apparent Ethnic Features", ethnic, +5)
+    elif ethnic_norm == _norm_value("Black/African-presenting"):
+        record("Visual Analysis", "Apparent Ethnic Features", ethnic, -50)
 
     chest = visual_val("Apparent Chest Proportions")
     chest_norm = _norm_value(chest)
@@ -724,9 +719,9 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
         record("Visual Analysis", "Grooming Effort Level", grooming, -5)
 
     # Profile Evaluation (LLM2)
-    sugar_baby_flag = int(eval_result.get("sugar_baby_flag", 0) or 0)
-    if sugar_baby_flag == 1:
-        record("Profile Eval", "Sugar Baby Flag", "Yes", -10)
+    financial_expectation_flag = int(eval_result.get("financial_expectation_flag", 0) or 0)
+    if financial_expectation_flag == 1:
+        record("Profile Eval", "Financial Expectation Flag", "Yes", -20)
 
     job_band = _norm_value((eval_result.get("job") or {}).get("band", ""))
     if job_band == _norm_value("T0"):
@@ -766,19 +761,40 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
     }
 
 
+DEFAULT_T_LONG = 10
+DEFAULT_T_SHORT = 15
+DEFAULT_DOM_MARGIN = 10
+
 def _classify_preference_flag(
     long_score: int,
     short_score: int,
-    t_long: int = 15,
-    t_short: int = 20,
-    dominance_margin: int = 10,
+    t_long: int = DEFAULT_T_LONG,
+    t_short: int = DEFAULT_T_SHORT,
+    dominance_margin: int = DEFAULT_DOM_MARGIN,
 ) -> str:
-    long_excess = long_score - t_long
-    short_excess = short_score - t_short
-    if long_score >= t_long and long_excess >= short_excess + dominance_margin:
+    # TODO: Re-enable dominance margin logic below
+    # long_excess = long_score - t_long
+    # short_excess = short_score - t_short
+    # if long_score >= t_long and long_excess >= short_excess + dominance_margin:
+    #     return "LONG"
+    # if short_score >= t_short and short_excess >= long_excess + dominance_margin:
+    #     return "SHORT"
+
+    long_meets = long_score >= t_long
+    short_meets = short_score >= t_short
+
+    if long_meets and short_meets:
+        if long_score > short_score:
+            return "LONG"
+        elif short_score > long_score:
+            return "SHORT"
+        else:
+            return "NONE"
+    elif long_meets:
         return "LONG"
-    if short_score >= t_short and short_excess >= long_excess + dominance_margin:
+    elif short_meets:
         return "SHORT"
+
     return "NONE"
 
 

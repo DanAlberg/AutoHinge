@@ -456,7 +456,11 @@ def _run_auto_sync():
     last_xml = ""
     current_folder = "Your turn"
     
+    screen_width, screen_height = get_screen_resolution(device)
+    safe_zone_bottom = screen_height * 0.8
+    
     while scrolls < max_scrolls:
+        skip_end_swipe = False
         xml = _dump_ui_xml(device)
         
         # Expand folders as they come into view
@@ -535,8 +539,16 @@ def _run_auto_sync():
                         needs_import = True
                         
             if needs_import:
-                print(f"Activity detected for {Colors.BOLD}{name}{Colors.ENDC}. Importing conversation...")
                 cx, cy = _bounds_center(bounds)
+                if cy > safe_zone_bottom:
+                    print(f"Profile {name} is in the bottom 20% of screen. Scrolling up to safely tap...")
+                    seen_names_on_ui.remove(name)
+                    swipe(device, 500, 1500, 500, 500, 500)
+                    time.sleep(1)
+                    skip_end_swipe = True
+                    break
+
+                print(f"Activity detected for {Colors.BOLD}{name}{Colors.ENDC}. Importing conversation...")
                 tap(device, cx, cy)
                 time.sleep(2)
                 
@@ -597,7 +609,9 @@ def _run_auto_sync():
         if any(f["name"] == "Hidden" for f in folders_on_screen):
             break
             
-        if scrolls < 999:
+        if skip_end_swipe:
+            pass
+        elif scrolls < 999:
             swipe(device, 500, 1800, 500, 500, 500)
             time.sleep(1)
         scrolls += 1
