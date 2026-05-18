@@ -2,9 +2,6 @@ from typing import Any, Dict, List, Optional
 
 from profile_utils import _get_core, _get_visual, _norm_value, _split_csv
 
-HOME_COUNTRY_PLUS = {"NO", "SE", "DK", "FI", "IS", "EE", "LV", "LT", "UA", "RU", "BY", "IE", "DE", "FR", "NL", "BE", "LU", "CH", "AT", "IT", "ES", "PT", "PL", "CZ", "CA", "US", "AU", "NZ", "JP", "KR", "SG", "IL", "AE", "GB"}
-HOME_COUNTRY_MINUS1 = {"AR", "BR", "CL", "CO", "PE", "EC", "UY", "PY", "BO", "VE", "GY", "SR", "ID", "MY", "TH", "VN", "PH", "KH", "LA", "MM", "BN"}
-
 def _parse_int(value: Any) -> Optional[int]:
     if value is None:
         return None
@@ -131,7 +128,7 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
         if declared_age_int < 25:
             age_score = int(round(30 - 0.7 * (declared_age_int - 25)**2))
         else:
-            age_score = int(round(30 - 0.85 * (declared_age_int - 25)**2))
+            age_score = int(round(30 - 0.6 * (declared_age_int - 25)**2 - 2.0 * (declared_age_int - 25)))
         record("Core Biometrics", "Age", declared_age, age_score)
 
     # Height weighting (declared height only)
@@ -223,7 +220,7 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     attractiveness_deltas = {
         _norm_value("Negligible"): -1000,
         _norm_value("Low / Unattractive"): -1000,
-        _norm_value("Limited / Below Average"): -20,
+        _norm_value("Limited / Below Average"): -30,
         _norm_value("Average / Moderate"): 0,
         _norm_value("High / Above Average"): 0,
         _norm_value("Exceptional / Elite"): 0,
@@ -245,6 +242,13 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     symmetry_norm = _norm_value(symmetry)
     if symmetry_norm == _norm_value("Low"):
         record("Visual Analysis", "Facial Symmetry Level", symmetry, -1000)
+
+    lip_filler = visual_val("Visible Lip Filler")
+    lip_filler_norm = _norm_value(lip_filler)
+    if lip_filler_norm == _norm_value("Obvious"):
+        record("Visual Analysis", "Visible Lip Filler", lip_filler, -15)
+    elif lip_filler_norm == _norm_value("Extreme"):
+        record("Visual Analysis", "Visible Lip Filler", lip_filler, -30)
 
     hair_color = visual_val("Hair Color")
     if _norm_value(hair_color) == _norm_value("Red/ginger"):
@@ -274,23 +278,23 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
 
     skin = visual_val("Apparent Skin Tone")
     skin_norm = _norm_value(skin)
-    if skin_norm in {_norm_value("Golden/medium-brown"), _norm_value("Warm brown/deep tan")}:
-        record("Visual Analysis", "Apparent Skin Tone", skin, -20)
-    elif skin_norm in {_norm_value("Dark-brown/chestnut"), _norm_value("Very dark/ebony/deep")}:
-        record("Visual Analysis", "Apparent Skin Tone", skin, -1000)
+    if skin_norm == _norm_value("Light/beige"):
+        record("Visual Analysis", "Apparent Skin Tone", skin, +5)
+    elif skin_norm == _norm_value("Very light/pale/fair"):
+        record("Visual Analysis", "Apparent Skin Tone", skin, +10)
 
     ethnic = visual_val("Apparent Ethnic Features")
     ethnic_norm = _norm_value(ethnic)
     if ethnic_norm == _norm_value("Southeast Asian-presenting"):
-        record("Visual Analysis", "Apparent Ethnic Features", ethnic, -15)
-    elif ethnic_norm in {
-        _norm_value("Nordic/Scandinavian-presenting"),
-        _norm_value("Slavic/Eastern European-presenting"),
-    }:
-        record("Visual Analysis", "Apparent Ethnic Features", ethnic, +5)
-
+        record("Visual Analysis", "Apparent Ethnic Features", ethnic, -20)
+    elif ethnic_norm == _norm_value("South Asian-presenting"):
+        record("Visual Analysis", "Apparent Ethnic Features", ethnic, -30)
+    elif ethnic_norm == _norm_value("Middle Eastern/Arab-presenting"):
+        record("Visual Analysis", "Apparent Ethnic Features", ethnic, -10)
+    elif ethnic_norm == _norm_value("Mixed/Ambiguous"):
+        record("Visual Analysis", "Apparent Ethnic Features", ethnic, -5)
     elif ethnic_norm == _norm_value("Black/African-presenting"):
-        record("Visual Analysis", "Apparent Ethnic Features", ethnic, -50)
+        record("Visual Analysis", "Apparent Ethnic Features", ethnic, -1000)
 
 
     chest = visual_val("Apparent Chest Proportions")
@@ -322,7 +326,17 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     # Profile Evaluation (LLM2)
     financial_expectation_flag = int(eval_result.get("financial_expectation_flag", 0) or 0)
     if financial_expectation_flag == 1:
-        record("Profile Eval", "Financial Expectation Flag", "Yes", -20)
+        record("Profile Eval", "Financial Expectation Flag", "Yes", -1000)
+
+    spiritual_witchy_flag = int(eval_result.get("spiritual_witchy_flag", 0) or 0)
+    if spiritual_witchy_flag == 1:
+        record("Profile Eval", "Spiritual/Witchy Flag", "Medium", -10)
+    elif spiritual_witchy_flag == 2:
+        record("Profile Eval", "Spiritual/Witchy Flag", "High", -20)
+
+    exhausting_demands_flag = int(eval_result.get("exhausting_demands_flag", 0) or 0)
+    if exhausting_demands_flag == 1:
+        record("Profile Eval", "Exhausting Demands Flag", "Yes", -10)
 
     job_band = _norm_value((eval_result.get("job") or {}).get("band", ""))
     if job_band == _norm_value("T0"):
@@ -341,11 +355,7 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     home_iso = str(eval_result.get("home_country_iso", "") or "").upper().strip()
     home_score = 0
     if home_iso == "US":
-        home_score = 20
-    elif home_iso in HOME_COUNTRY_PLUS:
-        home_score = 5
-    elif home_iso in HOME_COUNTRY_MINUS1:
-        home_score = -10
+        home_score = 15
     if home_score:
         record("Profile Eval", "Home Country", home_iso or "(unresolved)", home_score)
 
@@ -464,6 +474,11 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
     zodiac = core_val("Zodiac Sign")
     if str(zodiac).strip():
         record("Core Biometrics", "Zodiac Sign", zodiac, -5)
+
+    religion = core_val("Religious Beliefs")
+    religion_norm = _norm_value(religion)
+    if religion_norm == _norm_value("Muslim"):
+        record("Core Biometrics", "Religious Beliefs", religion, -10)
 
     # Age weighting (declared age only)
     declared_age = core_val("Age")
@@ -599,7 +614,7 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
     short_term = visual_val("Short-Term / Hookup Orientation Signals")
     short_term_norm = _norm_value(short_term)
     short_term_deltas = {
-        _norm_value("Low"): 5,
+        _norm_value("Low"): 0,
         _norm_value("Moderate"): 10,
         _norm_value("High"): 15,
     }
@@ -616,7 +631,7 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
     attractiveness_deltas = {
         _norm_value("Negligible"): -1000,
         _norm_value("Low / Unattractive"): -1000,
-        _norm_value("Limited / Below Average"): -20,
+        _norm_value("Limited / Below Average"): -30,
         _norm_value("Average / Moderate"): 0,
         _norm_value("High / Above Average"): 0,
         _norm_value("Exceptional / Elite"): 0,
@@ -638,6 +653,13 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
     symmetry_norm = _norm_value(symmetry)
     if symmetry_norm == _norm_value("Low"):
         record("Visual Analysis", "Facial Symmetry Level", symmetry, -1000)
+
+    lip_filler = visual_val("Visible Lip Filler")
+    lip_filler_norm = _norm_value(lip_filler)
+    if lip_filler_norm == _norm_value("Obvious"):
+        record("Visual Analysis", "Visible Lip Filler", lip_filler, -15)
+    elif lip_filler_norm == _norm_value("Extreme"):
+        record("Visual Analysis", "Visible Lip Filler", lip_filler, -30)
 
     hair_color = visual_val("Hair Color")
     hair_norm = _norm_value(hair_color)
@@ -671,22 +693,23 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
 
     skin = visual_val("Apparent Skin Tone")
     skin_norm = _norm_value(skin)
-    if skin_norm in {_norm_value("Golden/medium-brown"), _norm_value("Warm brown/deep tan")}:
-        record("Visual Analysis", "Apparent Skin Tone", skin, -20)
-    elif skin_norm in {_norm_value("Dark-brown/chestnut"), _norm_value("Very dark/ebony/deep")}:
-        record("Visual Analysis", "Apparent Skin Tone", skin, -1000)
+    if skin_norm == _norm_value("Light/beige"):
+        record("Visual Analysis", "Apparent Skin Tone", skin, +5)
+    elif skin_norm == _norm_value("Very light/pale/fair"):
+        record("Visual Analysis", "Apparent Skin Tone", skin, +10)
 
     ethnic = visual_val("Apparent Ethnic Features")
     ethnic_norm = _norm_value(ethnic)
     if ethnic_norm == _norm_value("Southeast Asian-presenting"):
-        record("Visual Analysis", "Apparent Ethnic Features", ethnic, -15)
-    elif ethnic_norm in {
-        _norm_value("Nordic/Scandinavian-presenting"),
-        _norm_value("Slavic/Eastern European-presenting"),
-    }:
-        record("Visual Analysis", "Apparent Ethnic Features", ethnic, +5)
+        record("Visual Analysis", "Apparent Ethnic Features", ethnic, -20)
+    elif ethnic_norm == _norm_value("South Asian-presenting"):
+        record("Visual Analysis", "Apparent Ethnic Features", ethnic, -30)
+    elif ethnic_norm == _norm_value("Middle Eastern/Arab-presenting"):
+        record("Visual Analysis", "Apparent Ethnic Features", ethnic, -10)
+    elif ethnic_norm == _norm_value("Mixed/Ambiguous"):
+        record("Visual Analysis", "Apparent Ethnic Features", ethnic, -5)
     elif ethnic_norm == _norm_value("Black/African-presenting"):
-        record("Visual Analysis", "Apparent Ethnic Features", ethnic, -50)
+        record("Visual Analysis", "Apparent Ethnic Features", ethnic, -1000)
 
     chest = visual_val("Apparent Chest Proportions")
     chest_norm = _norm_value(chest)
@@ -721,7 +744,17 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
     # Profile Evaluation (LLM2)
     financial_expectation_flag = int(eval_result.get("financial_expectation_flag", 0) or 0)
     if financial_expectation_flag == 1:
-        record("Profile Eval", "Financial Expectation Flag", "Yes", -20)
+        record("Profile Eval", "Financial Expectation Flag", "Yes", -1000)
+
+    spiritual_witchy_flag = int(eval_result.get("spiritual_witchy_flag", 0) or 0)
+    if spiritual_witchy_flag == 1:
+        record("Profile Eval", "Spiritual/Witchy Flag", "Medium", -10)
+    elif spiritual_witchy_flag == 2:
+        record("Profile Eval", "Spiritual/Witchy Flag", "High", -20)
+
+    exhausting_demands_flag = int(eval_result.get("exhausting_demands_flag", 0) or 0)
+    if exhausting_demands_flag == 1:
+        record("Profile Eval", "Exhausting Demands Flag", "Yes", -20)
 
     job_band = _norm_value((eval_result.get("job") or {}).get("band", ""))
     if job_band == _norm_value("T0"):
@@ -772,13 +805,12 @@ def _classify_preference_flag(
     t_short: int = DEFAULT_T_SHORT,
     dominance_margin: int = DEFAULT_DOM_MARGIN,
 ) -> str:
-    # TODO: Re-enable dominance margin logic below
-    # long_excess = long_score - t_long
-    # short_excess = short_score - t_short
-    # if long_score >= t_long and long_excess >= short_excess + dominance_margin:
-    #     return "LONG"
-    # if short_score >= t_short and short_excess >= long_excess + dominance_margin:
-    #     return "SHORT"
+    long_excess = long_score - t_long
+    short_excess = short_score - t_short
+    if long_score >= t_long and long_excess >= short_excess + dominance_margin:
+        return "LONG"
+    if short_score >= t_short and short_excess >= long_excess + dominance_margin:
+        return "SHORT"
 
     long_meets = long_score >= t_long
     short_meets = short_score >= t_short

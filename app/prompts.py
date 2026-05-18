@@ -47,6 +47,7 @@ def LLM1_VISUAL() -> str:
         '    "Apparent Ethnic Features": "",\n'
         '    "Hair Color": "",\n'
         '    "Facial Symmetry Level": "",\n'
+        '    "Visible Lip Filler": "",\n'
         '    "Indicators of Fitness or Lifestyle": "",\n'
         '    "Overall Visual Appeal Vibe": "",\n'
         '    "Apparent Age (Years)": "",\n'
@@ -81,9 +82,10 @@ def LLM1_VISUAL() -> str:
         '"Profile Distinctiveness": "High (specific/unique)", "Medium", "Low (generic/boilerplate)", "Unclear"\n'
         '"Apparent Build Category": "Very slender/petite", "Slender/lean", "Athletic/toned/fit", "Average build", "Curvy (defined waist)", "Curvy (softer proportions)", "Heavy-set/stocky", "Obese/high body fat", "Muscular/built"\n'
         '"Apparent Skin Tone": "Very light/pale/fair", "Light/beige", "Warm light/tan", "Olive/medium-tan", "Golden/medium-brown", "Warm brown/deep tan", "Dark-brown/chestnut", "Very dark/ebony/deep"\n'
-        '"Apparent Ethnic Features": "Ambiguous/unclear", "East Asian-presenting", "Southeast Asian-presenting", "South Asian-presenting", "Indian-presenting", "Jewish/Israeli-presenting", "Arab-presenting", "North African-presenting", "Middle Eastern-presenting (other/unspecified)", "Black/African-presenting", "Latino-presenting", "Nordic/Scandinavian-presenting", "Slavic/Eastern European-presenting", "Mediterranean/Southern European-presenting", "Western/Central European-presenting", "British/Irish-presenting", "White/European-presenting (unspecified)", "Mixed/ambiguous"\n'
-        '"Hair Color": "Black", "Dark brown", "Medium brown", "Light brown", "Blonde", "Platinum blonde", "Red/ginger", "Gray/white", "Bald/shaved", "Dyed pink", "Dyed blue", "Dyed (unnatural other)", "Dyed (mixed/multiple colors)"\n'
+        '"Apparent Ethnic Features": "White/European-presenting", "East Asian-presenting", "South Asian-presenting", "Southeast Asian-presenting", "Black/African-presenting", "Middle Eastern/Arab-presenting", "Mediterranean/Southern European-presenting", "Mixed/Ambiguous" - Note: South Asian = Indian/Pakistani/Bangladeshi/Sri Lankan; Southeast Asian = Thai/Vietnamese/Filipino/Indonesian/Malaysian\n'
+        '"Hair Color": "Black", "Dark brown", "Medium brown", "Light brown", "Blonde", "Platinum blonde", "Ginger", "Gray/white", "Bald/shaved", "Dyed red", "Dyed blue", "Dyed (unnatural other)", "Dyed (mixed/multiple colors)"\n'
         '"Facial Symmetry Level": "Very high", "High", "Moderate", "Low"\n'
+        '"Visible Lip Filler": "None visible", "Subtle/natural", "Obvious", "Extreme"\n'
         '"Indicators of Fitness or Lifestyle": "Visible muscle tone", "Athletic poses", "Sporty/athletic clothing", "Outdoor/active settings", "Gym/fitness context visible", "Sedentary/lounging poses", "No visible fitness indicators"\n'
         '"Overall Visual Appeal Vibe": "Very low-key/understated", "Natural/effortless", "Polished/elegant", "High-energy/adventurous", "Playful/flirty", "Sensual/alluring", "Edgy/alternative"\n'
         '"Apparent Age (Years)": integer estimate (e.g., 27). Leave empty if unclear.\n'
@@ -121,11 +123,13 @@ def LLM2(home_town: str, job_title: str, university: str, prompts_text: str = ""
         f'Job title: "{job_title or ""}"\n',
         f'University: "{university or ""}"\n',
         f'Prompts: "{prompts_text or ""}"\n\n',
-        "YOUR TASKS (4):\n",
+        "YOUR TASKS (5):\n",
         '1) Resolve "Home town" to an ISO 3166-1 alpha-2 country code (uppercase). If it is a UK city/area (e.g., "Wembley", "Harrow", "Manchester"), return "GB".\n',
         '2) Estimate FUTURE EARNING POTENTIAL (TIER) from the vague job/study field AND the university context. Titles are often minimal (e.g., "Tech", "Finance", "Product", "Student", "PhD"). Use the tier table in section B and return the corresponding band "T0"-"T4". When uncertain between two adjacent tiers, be slightly optimistic and choose the higher tier by at most one step.\n',
         '3) Check if "University" matches an elite list (case-insensitive), and return a 1/0 flag and the matched canonical name.\n',
-        '4) Analyze the Prompts for any language indicating "financial expectation" tendencies or transactional relationship expectations. Return a 1/0 flag.\n\n',
+        '4) Analyze the Prompts for any language indicating "financial expectation" tendencies or transactional relationship expectations. Return a 1/0 flag.\n',
+        '5) Analyze the Prompts for overt talk about witchyness, tarot, astrology, or intense spiritual/religious beliefs. Simply listing a religion in a basic bio is not enough; it must be overt or intense in the prompts or captions. Return a 0, 1, or 2 flag.\n',
+        '6) Analyze the Prompts for exhausting demands, like strict HR checklists or aggressive boundary-setting. Return a 1/0 flag.\n\n',
         "--------------------------------------------------------------------------------\n",
         "A) home_country_iso\n",
         '- If unresolved: home_country_iso = "" and home_country_confidence = 0.0.\n\n',
@@ -152,7 +156,12 @@ def LLM2(home_town: str, job_title: str, university: str, prompts_text: str = ""
         "- university_elite = 1 if matched, else 0\n",
         '- matched_university_name = the canonical elite name matched, else "".\n\n',
         "D) financial_expectation_flag\n",
-        "- Set to 1 if the prompts signal an expectation for the man to pay for dates, provide financial lifestyle padding, or fulfill a classic 'provider' role (e.g., 'traditional dates', '50/50 not for me', 'princess treatment', 'spoil me', 'traditional man'). Return 0 only if the request is clearly sarcastic.\n\n",        "--------------------------------------------------------------------------------\n",
+        "- Set to 1 if the prompts signal an expectation for the man to pay for dates, provide financial lifestyle padding, or fulfill a classic 'provider' role (e.g., 'traditional dates', '50/50 not for me', 'princess treatment', 'spoil me', 'traditional man'). Return 0 only if the request is clearly sarcastic.\n\n",
+        "E) spiritual_witchy_flag\n",
+        "- Set to 2 for highly overt or intense talk about witchy topics, tarot, astrology, or heavy religious/spiritual beliefs in the prompts. Set to 1 for moderate or casual mentions. Return 0 if there is none, or if religion is just stated as a demographic without being a major talking point.\n\n",
+        "F) exhausting_demands_flag\n",
+        "- Set to 1 if the prompts read like a strict HR checklist or aggressive boundary-setting exercise, heavily featuring therapy buzzwords ('emotional maturity', 'intentional') or exhausting demands ('bare minimum', 'non-negotiable', 'no games') rather than showcasing personality.\n\n",
+        "--------------------------------------------------------------------------------\n",
         "OUTPUT EXACTLY ONE JSON OBJECT (no commentary, no code fences):\n\n",
         "{\n",
         '  "home_country_iso": "",           // ISO alpha-2 or ""\n',
@@ -166,7 +175,11 @@ def LLM2(home_town: str, job_title: str, university: str, prompts_text: str = ""
         '  "university_elite": 0,            // 1 or 0\n',
         '  "matched_university_name": "",\n',
         '  "financial_expectation_flag": 0,             // 1 or 0\n',
-        '  "financial_expectation_reason": ""           // one short sentence justifying the flag choice\n',
+        '  "financial_expectation_reason": "",          // one short sentence justifying the flag choice\n',
+        '  "spiritual_witchy_flag": 0,                  // 0, 1, or 2\n',
+        '  "spiritual_witchy_reason": "",               // one short sentence justifying the flag choice\n',
+        '  "exhausting_demands_flag": 0,                // 1 or 0\n',
+        '  "exhausting_demands_reason": ""              // one short sentence justifying the flag choice\n',
         "}\n",
     ]
     return "".join(parts)

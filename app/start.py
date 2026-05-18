@@ -260,7 +260,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--unrestricted", action="store_true", help="Skip confirmations for dislike/send")
     parser.add_argument("--no-review-elite", action="store_false", dest="review_elite", help="Disable manual review for elite profiles (Default: Enabled)")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose [SCROLL]/[PHOTO] logging")
-    parser.add_argument("--validate-ml", action="store_true", help="Enable experimental ML validation suite and prompt for manual ratings")
     parser.add_argument("--force-short", action="store_true", help="Force short term message if subject is <= 26 and passes either threshold")
     parser.add_argument(
         "--profiles",
@@ -752,16 +751,6 @@ def _collect_poll(extracted: Dict[str, Any]) -> Dict[str, Any]:
     return poll if isinstance(poll, dict) else {}
 
 
-def _write_sent_message_record(
-    log_state: Dict[str, Any],
-    extracted: Dict[str, Any],
-    target_action: Dict[str, Any],
-    llm4_result: Optional[Dict[str, Any]],
-    out_path: str,
-) -> None:
-    return
-
-
 def _print_rich_score_table(label: str, score_result: Dict[str, Any]) -> None:
     contribs = score_result.get("contributions", []) if isinstance(score_result, dict) else []
     signals = (score_result.get("signals", {}) if isinstance(score_result, dict) else {}) or {}
@@ -797,7 +786,6 @@ def _run_single_profile(
     scroll_step: int,
     profile_idx: int,
     total_profiles: int,
-    ml_scorer: Optional[Any] = None,
 ) -> int:
     if total_profiles > 1:
         print(f"[RUN] profile {profile_idx + 1}/{total_profiles}")
@@ -892,7 +880,6 @@ def _run_single_profile(
         "llm4_5_result": {},
         "llm5_result": {},
         "target_action": {},
-        "ml_aesthetic_prediction": {}, # NEW ML DATA FIELD
     }
     _write_run_log(out_path, log_state)
     
@@ -986,6 +973,32 @@ def _run_single_profile(
         log_state["extracted_profile"] = extracted
         _write_run_log(out_path, log_state)
 
+    # Hard abort if core biometrics failed to extract
+    core_bio = extracted.get("Core Biometrics (Objective)", {})
+    name_val = core_bio.get("Name")
+    age_val = core_bio.get("Age")
+    height_val = core_bio.get("Height")
+
+    missing_fields = []
+    if not name_val or str(name_val).strip() == "":
+        missing_fields.append("Name")
+    if age_val is None or str(age_val).strip() == "":
+        missing_fields.append("Age")
+    if height_val is None or str(height_val).strip() == "":
+        missing_fields.append("Height")
+
+    if missing_fields:
+        missing_str = ", ".join(missing_fields)
+        error_text = f"Failed to extract core biometrics: [bold]{missing_str}[/bold]\n"
+        error_text += f"Extraction returned: Name={name_val}, Age={age_val}, Height={height_val}\n"
+        error_text += "This is a fatal error requiring user intervention."
+        console.print(Panel(error_text, title="[bold red]CRITICAL ERROR[/bold red]", border_style="red"))
+        _alert_user(f"CRITICAL: Failed to extract {missing_str}")
+        
+        # We need to completely abort the application, not just skip the profile.
+        # We return a specific exit code (e.g., 4) to bubble up and halt the main loop.
+        return 4
+
     t0 = time.perf_counter()
     eval_result = run_profile_eval_llm(
         extracted,
@@ -1069,6 +1082,9 @@ def _run_single_profile(
 
     # --- DUPLICATE CHECK ---
     linked_profile_id = None
+    if log_state:
+        log_state["duplicate_checks"] = []
+        
     try:
         if name_val and age_val and height_val:
             age_int = int(age_val)
@@ -1076,8 +1092,10 @@ def _run_single_profile(
             rerun_candidates = check_for_rerun(str(name_val).strip(), age_int, height_int)
             if rerun_candidates:
                 print(f"[VERIFY] Found {len(rerun_candidates)} potential duplicate candidate(s). Verifying with LLM...")
-                # We'll just verify against the most recent matching one
                 for cand in rerun_candidates:
+                    cand_id = cand.get("id")
+                    print(f"[VERIFY] Checking against previous profile ID {cand_id}...")
+                    
                     # Construct a dummy 'extracted' dict from the old flat row for the LLM
                     old_prof_data = {
                         "Name": cand.get("Name"),
@@ -1108,8 +1126,14 @@ def _run_single_profile(
                         "Photo_2": extracted.get("Profile Content (Free Description)", {}).get("Extensive Description of Photo 2", {}).get("description"),
                     }
                     is_same, dupe_response = run_duplicate_verification(old_prof_data, new_prof_data, model=os.getenv("LLM_SMALL_MODEL") or os.getenv("GEMINI_SMALL_MODEL"))
+                    
+                    print(f"[VERIFY] LLM says: {is_same}")
+                    
                     if log_state:
-                        log_state["duplicate_check"] = dupe_response
+                        # Annotate the response with the candidate ID
+                        if isinstance(dupe_response, dict):
+                            dupe_response["candidate_id"] = cand_id
+                        log_state["duplicate_checks"].append(dupe_response)
                         _write_run_log(out_path, log_state)
                     
                     if is_same:
@@ -1124,7 +1148,9 @@ def _run_single_profile(
                             f"Action: Profile will be treated as new, but linked in DB."
                         )
                         console.print(Panel(alert_msg, border_style="red", expand=False))
-                        linked_profile_id = cand.get("id")
+                        
+                        # Point to the root ID if this candidate was itself a duplicate of an earlier profile
+                        linked_profile_id = cand.get("linked_profile_id") or cand_id
                         
                         # TODO: Remove this after testing
                         input("Press Enter to acknowledge returning profile and continue...")
@@ -1228,7 +1254,7 @@ def _run_single_profile(
                         _alert_user(f"All Messages Rejected\n\n{fail_reason}\n\nFalling back to manual mode.")
                         # Fall back to manual mode - user can override or skip
                         llm4_result, send_approved, redo_requested = _choose_opening_message(
-                            {}, {}, unrestricted=False, timings=timings
+                            llm3_result, llm4_result, unrestricted=False, timings=timings, safety_intervention=True
                         )
                     elif llm4_5_result.get("action") == "PICK":
                         # LLM4.5 picked a winner
@@ -1746,6 +1772,19 @@ def _run_single_profile(
                         """
                 except Exception as e:
                     print(f"[sql] log failed: {e}")
+                
+                # Rename the run folder
+                if run_folder and os.path.isdir(run_folder):
+                    try:
+                        suffix = decision.replace("_pickup", "").upper()
+                        new_folder = f"{run_folder}_{suffix}"
+                        os.rename(run_folder, new_folder)
+                        run_folder = new_folder
+                        out_path = os.path.join(run_folder, "profile.json")
+                        table_path = os.path.join(run_folder, "score.txt")
+                        print(f"[LOG] Renamed run folder to {os.path.basename(new_folder)}")
+                    except Exception as e:
+                        print(f"[LOG] failed to rename run folder: {e}")
             else:
                 print("[sql] skipped (no irreversible action taken)")
             
@@ -1849,25 +1888,6 @@ def main() -> int:
     max_scrolls = 40
     scroll_step = 900
 
-    # Initialize ML Scorer globally so models only load into memory once
-    ml_scorer = None
-    if args.validate_ml:
-        try:
-            from ml.predict_aesthetic import AestheticScorer
-        except ImportError:
-            AestheticScorer = None
-            
-        if AestheticScorer:
-            print("[INIT] Loading ML Aesthetic Scorer models into memory (This takes a few seconds)...")
-            try:
-                ml_scorer = AestheticScorer()
-                print("[INIT] ML Models loaded successfully.")
-            except Exception as e:
-                print(f"[INIT] WARNING: Failed to load AestheticScorer: {e}")
-                print("[INIT] Proceeding without local ML scoring.")
-        else:
-            print("[INIT] WARNING: AestheticScorer module not found. Is predict_aesthetic.py in app/ml/?")
-
     device = None
     width = height = 0
     keep_awake = True
@@ -1892,7 +1912,6 @@ def main() -> int:
                     scroll_step,
                     idx,
                     total_profiles,
-                    ml_scorer=ml_scorer,
                 )
             except LLMError as e:
                 # Create minimal log state for error reporting

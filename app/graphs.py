@@ -136,6 +136,85 @@ def generate_01_daily_activity(df):
     print(f"Graph successfully generated and saved to: {output_file}")
 
 
+def generate_01b_daily_activity(df):
+    output_file = os.path.join(OUTPUT_DIR, '01b_daily_activity.png')
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    df = df.copy()
+    df = df[df['timestamp'] >= '2026-04-01'].copy()
+    df['date'] = df['timestamp'].dt.date
+
+    # Group by date
+    daily = df.groupby('date').agg(
+        evals=('is_eval', 'sum'),
+        likes=('is_like', 'sum'),
+        matches=('is_match', 'sum')
+    ).reset_index()
+
+    daily['date'] = pd.to_datetime(daily['date'])
+    daily = daily.sort_values('date')
+
+    # Reindex to fill missing dates with 0
+    if not daily.empty:
+        full_range = pd.date_range(start=daily['date'].min(), end=daily['date'].max(), freq='D')
+        daily = daily.set_index('date').reindex(full_range).fillna(0).reset_index()
+        daily.rename(columns={'index': 'date'}, inplace=True)
+
+    # Filter for plotting: only days with >= 3 profiles evaluated
+    plot_data = daily[daily['evals'] >= 3].copy()
+
+    if plot_data.empty:
+        print("Not enough data to plot (requires days with >= 3 evaluations).")
+        return
+
+    # Plotting
+    fig, ax1 = plt.subplots(figsize=(16, 8))
+    ax2 = ax1.twinx()
+
+    # Overlayed bar charts for evaluated profiles and likes sent
+    ax1.bar(plot_data['date'], plot_data['evals'], color='#e0e2e4', label='Profiles Evaluated', width=0.8)
+    ax1.bar(plot_data['date'], plot_data['likes'], color='#E74C3C', label='Likes Sent', width=0.8)
+
+    # Line chart for matches (straight count)
+    ax2.plot(plot_data['date'], plot_data['matches'], color='#2ECC71', marker='s', linewidth=3, markersize=8, label='Matches From This Day')
+
+    # Force the lines (ax2) to render in front of the bars (ax1)
+    ax1.set_zorder(1)
+    ax2.set_zorder(2)
+    ax2.patch.set_visible(False)
+
+    # Formatting
+    ax1.set_title('Daily Activity: Evals, Likes, and Matches (Filtered: \u2265 3 Evals, Apr 2026 Onwards)', fontsize=16, fontweight='bold', pad=15)
+    ax1.set_xlabel('Date', fontweight='bold', fontsize=12, labelpad=10)
+    ax1.set_ylabel('Number of Profiles Evaluated / Liked', color='grey', fontweight='bold', fontsize=12)
+    ax2.set_ylabel('Number of Matches', color='black', fontweight='bold', fontsize=12)
+
+    # Axis ticks and limits
+    ax2.yaxis.set_major_locator(mtick.MaxNLocator(integer=True))
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
+    ax1.tick_params(axis='x', rotation=45)
+
+    # Styling
+    ax1.grid(True, axis='y', color='lightgrey', linestyle='--', linewidth=0.7)
+
+    for spine in ['top', 'right', 'left', 'bottom']:
+        ax1.spines[spine].set_color('lightgrey')
+        ax2.spines[spine].set_color('lightgrey')
+    ax2.spines['top'].set_visible(False)
+    ax1.spines['top'].set_visible(False)
+
+    # Legend
+    lines_1, labels_1 = ax1.get_legend_handles_labels()
+    lines_2, labels_2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper left', fontsize=11, frameon=True, shadow=True)
+
+    plt.tight_layout()
+    plt.savefig(output_file, dpi=150)
+    plt.close()
+    
+    print(f"Graph successfully generated and saved to: {output_file}")
+
+
 def generate_02_best_times_heatmap(df):
     df = df.copy()
     # Create Day of Week and Hour columns
@@ -627,6 +706,7 @@ if __name__ == "__main__":
     df = database()
     if df is not None:
         generate_01_daily_activity(df)
+        generate_01b_daily_activity(df)
         generate_02_best_times_heatmap(df)
         generate_03_time_of_day_trends(df)
         generate_03b_time_of_day_recent(df)

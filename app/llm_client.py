@@ -157,8 +157,8 @@ def calculate_cost(model_name: str, usage_metadata: Any) -> float:
     if not usage_metadata:
         return 0.0
     try:
-        prompt_tokens = getattr(usage_metadata, "prompt_token_count", 0)
-        candidate_tokens = getattr(usage_metadata, "candidates_token_count", 0)
+        prompt_tokens = getattr(usage_metadata, "prompt_token_count", 0) or 0
+        candidate_tokens = getattr(usage_metadata, "candidates_token_count", 0) or 0
     except Exception:
         return 0.0
     
